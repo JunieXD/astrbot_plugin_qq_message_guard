@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 import httpx
 from PIL import Image, ImageOps
 
-from .config import QUESTIONS, GuardError
+from .config import QUESTIONS, GuardError, InputRejected
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,10 @@ class OneJev:
                     headers=headers,
                     timeout=settings.timeout_seconds,
                 )
+                if response.status_code in (413, 422):
+                    raise InputRejected(
+                        f"OneJev拒绝当前审核输入（HTTP {response.status_code}），本条未完成审核。"
+                    )
                 if response.status_code != 200:
                     raise GuardError(f"OneJev返回HTTP {response.status_code}，本次未完成审核。")
                 if len(response.content) > 1024 * 1024:

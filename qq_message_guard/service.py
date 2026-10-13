@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from dataclasses import asdict
 
 from .client import OneJev
-from .config import QUESTION_VERSION, Deferred, GuardError, Uncertain
+from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncertain
 from .messages import Message, message_id, model_state
 from .platform import ApiFailure
 
@@ -266,8 +266,9 @@ class Service:
                 )
                 raise
             except GuardError as exc:
-                self.model_cooldown = self.clock() + 60
-                await self.store.call("put", "model-cooldown", self.model_cooldown)
+                if not isinstance(exc, InputRejected):
+                    self.model_cooldown = self.clock() + 60
+                    await self.store.call("put", "model-cooldown", self.model_cooldown)
                 await self.store.call(
                     "record_call", cid, self.clock(), None, (time.monotonic() - started) * 1000, str(exc)
                 )
@@ -540,7 +541,7 @@ class Service:
                     (op for op in await self.store.call("operations", batch["anchor"]) if op["kind"] == kind),
                     None,
                 )
-                if previous is not None:
+                if previous is not None and previous["state"] != "not_sent":
                     continue  # Submitted delivery results, including unknown ones, are never resent.
 
                 async def prepare(params=params):
@@ -562,7 +563,8 @@ class Service:
                 except GuardError as exc:
                     self.journal.record("管理员通知未完成", case=first["id"], reason=str(exc))
                     submitted = any(
-                        op["kind"] == kind for op in await self.store.call("operations", batch["anchor"])
+                        op["kind"] == kind and op["state"] != "not_sent"
+                        for op in await self.store.call("operations", batch["anchor"])
                     )
                     pending = pending or not submitted
             if not pending:

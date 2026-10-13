@@ -267,7 +267,7 @@ class Store:
 
     async def can_write(self, cid, kind, account, now, limit, group_warnings=5):
         if cid is not None and await self._row(
-            "SELECT 1 FROM operations WHERE case_id=? AND kind=?", (cid, kind)
+            "SELECT 1 FROM operations WHERE case_id=? AND kind=? AND state!='not_sent'", (cid, kind)
         ):
             raise Deferred("该记录已有操作提交，不重复发送；请查看操作结果。")
         if await self.get("pause:" + account):
@@ -300,12 +300,25 @@ class Store:
         if kind == "warn":
             message = (await self.case(cid))["data"]["message"]
             await self.put(f"warn:{account}:{message['group']}:{message['user']}", now + warn_minutes * 60)
-        cursor = await self.db.execute(
-            "INSERT INTO operations(case_id,kind,account,at,state) VALUES(?,?,?,?,'reserved')",
-            (cid, kind, account, now),
+        previous = await self._row(
+            "SELECT id FROM operations WHERE case_id=? AND kind=? AND state='not_sent'", (cid, kind)
         )
+        if previous:
+            # Reuse only an intention known not to have reached the transport.
+            # The serialized transaction keeps the quota and unique key intact.
+            oid = previous["id"]
+            await self.db.execute(
+                "UPDATE operations SET account=?,at=?,state='reserved',detail='' WHERE id=?",
+                (account, now, oid),
+            )
+        else:
+            cursor = await self.db.execute(
+                "INSERT INTO operations(case_id,kind,account,at,state) VALUES(?,?,?,?,'reserved')",
+                (cid, kind, account, now),
+            )
+            oid = cursor.lastrowid
         await self.put("gap:" + account, now + gap)
-        return cursor.lastrowid
+        return oid
 
     async def operation(self, oid, state, detail=""):
         await self.db.execute("UPDATE operations SET state=?,detail=? WHERE id=?", (state, detail[:500], oid))
@@ -314,9 +327,15 @@ class Store:
         return [dict(row) for row in await self._rows("SELECT * FROM operations WHERE case_id=?", (cid,))]
 
     async def alerts(self, revision):
+        # Fetch each source's oldest alert before taking its next one. A busy
+        # source with an unavailable destination must not hide other groups.
         rows = await self._rows(
-            "SELECT * FROM cases WHERE settings_revision=? AND notify_enabled=1 AND notified=0 AND human=''"
-            " AND (flagged=1 OR state='incomplete') ORDER BY created,id LIMIT 1000",
+            "WITH pending AS (SELECT id,created,"
+            " ROW_NUMBER() OVER (PARTITION BY scope ORDER BY created,id) AS position"
+            " FROM cases WHERE settings_revision=? AND notify_enabled=1 AND notified=0 AND human=''"
+            " AND (flagged=1 OR state='incomplete'))"
+            " SELECT c.* FROM pending p JOIN cases c ON c.id=p.id"
+            " ORDER BY p.position,p.created,p.id LIMIT 1000",
             (revision,),
         )
         return [self._case(row) for row in rows]

@@ -12,6 +12,10 @@ class GuardError(Exception):
     """Safe, administrator-facing error without transport credentials."""
 
 
+class InputRejected(GuardError):
+    """The model rejected this input; it is not a service-wide outage."""
+
+
 class Deferred(GuardError):
     """No write submitted; a later explicit action may be possible."""
 
