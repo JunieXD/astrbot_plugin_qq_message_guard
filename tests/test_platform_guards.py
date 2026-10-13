@@ -28,8 +28,9 @@ async def test_exhausted_write_cap_does_not_query_members_or_messages(env):
     env.configure(auto_recall=True)
     await env.speak()
     case = await env.process()
-    for _ in range(30):
-        oid = await env.store.call("reserve", None, "notice", "qq:" + A, env.clock(), 30, 0)
+    limit = env.box.settings.advanced.recalls_per_hour
+    for _ in range(limit):
+        oid = await env.store.call("reserve", None, "recall", "qq:" + A, env.clock(), limit, 0)
         await env.store.call("operation", oid, "confirmed")
     with pytest.raises(Deferred, match="额度"):
         await env.s.recall(case)
@@ -63,6 +64,8 @@ async def test_existing_shared_guard_used_with_fresh_preparation(env):
     await env.s.recall(await env.process())
     assert len(guard.calls) == 1 and guard.calls[0]["account"] == "qq"
     assert guard.calls[0]["key"] is None and env.bot.writes[0][0] == "delete_msg"
+    assert guard.calls[0]["priority"] == 0
+    assert guard.calls[0]["gap"] == (0.2, 0.6)
 
 
 async def test_shared_guard_skipping_action_is_not_recorded_as_success(env):

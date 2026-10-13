@@ -402,7 +402,7 @@ async def test_admin_delivery_deferred_is_retried_without_resending_private(env)
     await env.s.send_alerts()
     assert [a for a, _ in env.bot.writes] == ["send_private_msg"]
     assert not (await env.store.call("case", first["id"]))["notified"]
-    await env.speak("new message after frozen batch")
+    await env.speak("new message after frozen batch", user_id="200002")
     second = await env.process()
     env.platform.member = original
     env.clock.now += 601

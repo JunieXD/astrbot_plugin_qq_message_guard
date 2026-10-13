@@ -123,13 +123,21 @@ class Platform:
             raise Deferred("共享QQ操作协调器不兼容。")
         return guard
 
-    async def write(self, message, cid, kind, action, params, gate, prepare):
+    async def write(self, message, cid, kind, action, params, gate, prepare, *, cooldowns=()):
         pid, account = message["platform"], message["account"]
         key = pid + ":" + account
         lock = self.locks.setdefault(key, asyncio.Lock())
+        guard = self.shared_guard()
+        more = self.settings().advanced
+        gap_range = (
+            (more.recall_gap_min, more.recall_gap_max)
+            if kind == "recall"
+            else (more.account_gap_min, more.account_gap_max)
+        )
+        limit = more.recalls_per_hour if kind == "recall" else more.writes_per_hour
         async with lock:
             await self.binding(pid, account)
-            if not await self.online(pid, account):
+            if guard is None and not await self.online(pid, account):
                 await self.store.call(
                     "put", "recovery:" + key, self.clock() + self.settings().advanced.recovery_seconds
                 )
@@ -156,21 +164,23 @@ class Platform:
                         kind,
                         key,
                         self.clock(),
-                        more.writes_per_hour,
+                        limit,
                         more.group_warnings_per_hour,
                     )
                     await prepare()
                     gate()
+                    gap = random.uniform(*gap_range)
                     oid = await self.store.call(
                         "reserve",
                         cid,
                         kind,
                         key,
                         self.clock(),
-                        more.writes_per_hour,
-                        random.uniform(more.account_gap_min, more.account_gap_max),
+                        limit,
+                        gap,
                         more.warn_cooldown_minutes,
                         more.group_warnings_per_hour,
+                        [(name, self.clock() + seconds) for name, seconds in cooldowns],
                     )
                     await self.store.call("operation", oid, "submitted")
                     gate()
@@ -200,6 +210,9 @@ class Platform:
                         except GuardError as exc:
                             raise Uncertain("发送接口未返回有效消息ID，不会自动重发。") from exc
                     await self.store.call("operation", oid, "confirmed")
+                    # Pace from the response, so a slow API call cannot consume
+                    # the entire interval before the next operation begins.
+                    await self.store.call("put", "gap:" + key, self.clock() + gap)
                     self.journal.record("QQ操作完成", case=cid, operation=oid, kind=kind)
                     return result
                 except BaseException as exc:
@@ -222,8 +235,6 @@ class Platform:
                         raise Deferred(str(exc)) from exc
                     raise
 
-            guard = self.shared_guard()
-            more = self.settings().advanced
             if guard is None:
                 return await perform()
 
@@ -239,7 +250,15 @@ class Platform:
 
             try:
                 options = (
-                    dict(priority=0, group=message["group"], label="消息审核")
+                    dict(
+                        priority=0 if kind == "recall" else 1 if kind == "warn" else 2,
+                        group=message["group"],
+                        label="消息撤回"
+                        if kind == "recall"
+                        else "成员警告"
+                        if kind == "warn"
+                        else "管理提醒",
+                    )
                     if getattr(guard, "scheduling_version", 1) >= 3
                     else {}
                 )
@@ -254,7 +273,7 @@ class Platform:
                         "failure_cooldown_seconds": 3600,
                     },
                     delay=(0, 0),
-                    gap=(more.account_gap_min, more.account_gap_max),
+                    gap=gap_range,
                     key=None,
                     **options,
                 )

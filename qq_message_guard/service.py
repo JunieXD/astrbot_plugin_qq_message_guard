@@ -43,6 +43,7 @@ class Service:
         self.served = {}
         self.wake = asyncio.Event()
         self.action_wake = asyncio.Event()
+        self.notify_wake = asyncio.Event()
         self.input_lock = asyncio.Lock()
         self.tasks, self.jobs = set(), set()
         self.stopping = False
@@ -371,6 +372,9 @@ class Service:
                     "auto_ready": bool(
                         not missing and (auto and policy.auto_recall or warn and policy.warn_member)
                     ),
+                    "actions_pending": bool(
+                        not missing and (auto and policy.auto_recall or warn and policy.warn_member)
+                    ),
                 },
                 self.clock(),
                 flagged,
@@ -387,6 +391,7 @@ class Service:
                 harmful=flagged,
             )
             self.action_wake.set()
+            self.notify_wake.set()
         except asyncio.CancelledError:
             await asyncio.shield(
                 self.store.call(
@@ -520,6 +525,9 @@ class Service:
                 except GuardError as exc:
                     await self.store.call("patch", case["id"], {"warning_reason": str(exc)})
                     self.journal.record("群内警告未完成", case=case["id"], reason=str(exc), harmful=True)
+                finally:
+                    await asyncio.shield(self.store.call("patch", case["id"], {"actions_pending": False}))
+                    self.notify_wake.set()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -529,7 +537,11 @@ class Service:
     async def notifier(self):
         while not self.stopping:
             try:
-                await self.sleep(10)
+                try:
+                    await asyncio.wait_for(self.notify_wake.wait(), 5)
+                except asyncio.TimeoutError:
+                    pass
+                self.notify_wake.clear()
                 if not self.failure:
                     await self.send_alerts()
             except asyncio.CancelledError:
@@ -554,6 +566,7 @@ class Service:
                 and policy.enabled
                 and (policy.notify_private or policy.notify_group)
                 and case["data"]["settings_revision"] == settings.revision
+                and is_reviewable(case)
             ):
                 scopes[case["scope"]].append(case)
         for scope, cases in scopes.items():
@@ -565,8 +578,12 @@ class Service:
             batch_key = "alert-batch:" + scope
             batch = await self.store.call("get", batch_key)
             if not batch or batch["revision"] != settings.revision:
+                users = set()
+                for item in cases:
+                    if len(users) < 8:
+                        users.add(item["data"]["message"]["user"])
                 batch = {
-                    "ids": [c["id"] for c in cases],
+                    "ids": [c["id"] for c in cases if c["data"]["message"]["user"] in users],
                     "revision": settings.revision,
                     "anchor": cases[0]["id"],
                 }
@@ -578,7 +595,6 @@ class Service:
                 continue
             first, message = cases[0], cases[0]["data"]["message"]
             policy = settings.group(message["group"])
-            text = notification_text(cases, policy, settings)
 
             def gate():
                 latest, policy = self.policy_for(first)
@@ -605,6 +621,17 @@ class Service:
                 )
                 if previous is not None and previous["state"] != "not_sent":
                     continue  # Submitted delivery results, including unknown ones, are never resent.
+                selected, seen, cooldowns = [], set(), []
+                for item in cases:
+                    user = item["data"]["message"]["user"]
+                    key = f"notice-member:{scope}:{target}:{user}"
+                    if user not in seen and self.clock() >= await self.store.call("get", key, 0):
+                        selected.append(item)
+                        cooldowns.append((key, settings.advanced.notify_cooldown_minutes * 60))
+                        seen.add(user)
+                if not selected:
+                    continue
+                text = notification_text(selected, policy, settings)
 
                 async def prepare(params=params):
                     if "group_id" in params:
@@ -621,6 +648,7 @@ class Service:
                         {**params, "message": [{"type": "text", "data": {"text": text}}]},
                         gate,
                         prepare,
+                        cooldowns=cooldowns,
                     )
                 except GuardError as exc:
                     self.journal.record("管理员通知未完成", case=first["id"], reason=str(exc))
@@ -722,9 +750,10 @@ class Service:
             raise GuardError("警告模板展开后超过2000字，请缩短模板。")
         screen_output(text, settings.terms)
         gate()
-        await self.sleep(
-            random.uniform(settings.advanced.action_min_seconds, settings.advanced.action_max_seconds)
-        )
+        if not own_recall:
+            await self.sleep(
+                random.uniform(settings.advanced.action_min_seconds, settings.advanced.action_max_seconds)
+            )
         await self.platform.write(
             message,
             cid,

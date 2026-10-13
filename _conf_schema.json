@@ -239,12 +239,12 @@
         "description": "撤回／警告前最短等待秒数",
         "type": "float",
         "default": 0,
-        "hint": "随机等待，默认0～1秒，及时处理优先"
+        "hint": "随机等待，默认0～0.3秒；撤回后跟随的警告不重复等待。"
       },
       "action_max_seconds": {
         "description": "撤回／警告前最长等待秒数",
         "type": "float",
-        "default": 1,
+        "default": 0.3,
         "hint": "不小于最短值"
       },
       "account_gap_min": {
@@ -260,10 +260,10 @@
         "hint": "不小于最短值；随机延迟不能保证避免QQ风控"
       },
       "writes_per_hour": {
-        "description": "每个账号每小时最多写操作",
+        "description": "每账号每小时最多提醒发送次数",
         "type": "int",
         "default": 30,
-        "hint": "撤回、警告和各路通知合计；提交失败或结果不明也占额度"
+        "hint": "@警告、管理群及私聊通知合计；撤回使用独立额度。"
       },
       "reads_per_hour": {
         "description": "每个账号每小时最多QQ查询",
@@ -274,13 +274,13 @@
       "notify_minutes": {
         "description": "管理员通知合并间隔（分钟）",
         "type": "int",
-        "default": 10,
-        "hint": "每个来源群分别计算，不逐条刷屏"
+        "default": 1,
+        "hint": "不同成员的提醒默认每来源群最多每分钟一批；同成员另受通知冷却限制。"
       },
       "recovery_seconds": {
         "description": "断线恢复缓冲秒数",
         "type": "int",
-        "default": 300,
+        "default": 30,
         "hint": "连接变化时暂缓操作；旧连接消息不补发处罚"
       },
       "warn_cooldown_minutes": {
@@ -292,8 +292,8 @@
       "group_warnings_per_hour": {
         "description": "每群每小时最多警告几次",
         "type": "int",
-        "default": 5,
-        "hint": "默认5次；仍记录其他命中供管理员复核"
+        "default": 10,
+        "hint": "默认10次；仍记录其他命中供管理员复核"
       },
       "retention_days": {
         "description": "普通审核记录保留天数",
@@ -330,6 +330,30 @@
         "type": "int",
         "default": 4000,
         "hint": "500～12000字；超过后优先保留引用与较新消息，不截断当前待审核文字。模型拒绝过大输入时记为未完成，不自动重试。"
+      },
+      "recall_gap_min": {
+        "description": "撤回后最短操作间隔秒数",
+        "type": "float",
+        "default": 0.2,
+        "hint": "默认0.2～0.6秒，适用于下一次撤回或紧随的@警告；与其他插件共享排队。"
+      },
+      "recall_gap_max": {
+        "description": "撤回后最长操作间隔秒数",
+        "type": "float",
+        "default": 0.6,
+        "hint": "不小于最短值。"
+      },
+      "recalls_per_hour": {
+        "description": "每账号每小时最多撤回次数",
+        "type": "int",
+        "default": 180,
+        "hint": "独立于提醒额度，持续违规仍逐条撤回；失败和结果不明也计入。"
+      },
+      "notify_cooldown_minutes": {
+        "description": "同成员管理员通知冷却分钟数",
+        "type": "int",
+        "default": 60,
+        "hint": "同一个来源群、成员和通知渠道，默认一小时只提醒一次；不影响继续审核和撤回。重载后保留。"
       }
     }
   },

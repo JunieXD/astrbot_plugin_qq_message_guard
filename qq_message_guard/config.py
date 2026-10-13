@@ -156,17 +156,21 @@ class Advanced:
     image_timeout: int = 12
     max_action_seconds: int = 120
     action_min_seconds: float = 0
-    action_max_seconds: float = 1
+    action_max_seconds: float = 0.3
+    recall_gap_min: float = 0.2
+    recall_gap_max: float = 0.6
     account_gap_min: float = 2
     account_gap_max: float = 5
     writes_per_hour: int = 30
+    recalls_per_hour: int = 180
     reads_per_hour: int = 600
-    notify_minutes: int = 10
-    recovery_seconds: int = 300
+    notify_minutes: int = 1
+    notify_cooldown_minutes: int = 60
+    recovery_seconds: int = 30
     retention_days: int = 14
     harmful_retention_days: int = 60
     warn_cooldown_minutes: int = 60
-    group_warnings_per_hour: int = 5
+    group_warnings_per_hour: int = 10
     log_mb: int = 10
 
 
@@ -279,8 +283,10 @@ def parse_settings(raw):
         "image_timeout": (3, 30),
         "max_action_seconds": (10, 600),
         "writes_per_hour": (1, 300),
+        "recalls_per_hour": (1, 1000),
         "reads_per_hour": (30, 3600),
         "notify_minutes": (1, 1440),
+        "notify_cooldown_minutes": (1, 1440),
         "recovery_seconds": (30, 3600),
         "retention_days": (1, 90),
         "harmful_retention_days": (1, 180),
@@ -291,11 +297,19 @@ def parse_settings(raw):
     values = {k: integer(more.get(k, getattr(Advanced, k)), k, *bounds) for k, bounds in ranges.items()}
     if values["harmful_retention_days"] < values["retention_days"]:
         raise GuardError("可疑记录保留天数不能短于普通记录。")
-    for name in ("action_min_seconds", "action_max_seconds", "account_gap_min", "account_gap_max"):
+    for name in (
+        "action_min_seconds",
+        "action_max_seconds",
+        "account_gap_min",
+        "account_gap_max",
+        "recall_gap_min",
+        "recall_gap_max",
+    ):
         values[name] = number(more.get(name, getattr(Advanced, name)), name, 0, 30)
     if (
         values["action_max_seconds"] < values["action_min_seconds"]
         or values["account_gap_max"] < values["account_gap_min"]
+        or values["recall_gap_max"] < values["recall_gap_min"]
     ):
         raise GuardError("最长操作等待不能小于最短等待。")
     url = raw.get("base_url", "http://127.0.0.1:8000")

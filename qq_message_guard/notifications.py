@@ -8,7 +8,12 @@ from .lexicon import matches
 
 
 def is_reviewable(case):
-    return bool(case["flagged"] and case["data"].get("scores") and not case["human"])
+    return bool(
+        case["flagged"]
+        and case["data"].get("scores")
+        and not case["human"]
+        and not case["data"].get("actions_pending")
+    )
 
 
 def notification_text(cases, policy, settings):

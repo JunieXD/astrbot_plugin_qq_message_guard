@@ -53,6 +53,9 @@ def test_invalid_config(field, value):
         {"image_mb": 0},
         {"max_images": 5},
         {"action_min_seconds": float("nan")},
+        {"recall_gap_min": 1, "recall_gap_max": 0.2},
+        {"recalls_per_hour": 0},
+        {"notify_cooldown_minutes": 0},
     ],
 )
 def test_invalid_advanced(more):

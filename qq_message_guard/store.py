@@ -133,16 +133,23 @@ class Store:
         for row in await self._rows("SELECT id FROM cases WHERE state IN ('queued','auditing')"):
             await self.finish(row["id"], "incomplete", {"reason": "插件重载中断，未完成审核"}, now)
         for row in await self._rows("SELECT * FROM operations WHERE state='submitted'"):
-            await self.db.execute("UPDATE operations SET state='unknown' WHERE id=?", (row["id"],))
+            await self.operation(row["id"], "unknown")
             await self.put("pause:" + row["account"], "上次提交结果不明，请核对后使用恢复命令")
-        await self.db.execute("UPDATE operations SET state='not_sent' WHERE state='reserved'")
-        for row in await self._rows("SELECT * FROM cases WHERE state='review' AND action_ready=1"):
+        for row in await self._rows("SELECT id FROM operations WHERE state='reserved'"):
+            await self.operation(row["id"], "not_sent")
+        for row in await self._rows(
+            "SELECT * FROM cases WHERE action_ready=1 OR json_extract(data,'$.actions_pending')=1"
+        ):
             case = self._case(row)
-            if case["data"].get("auto_ready"):
+            if case["data"].get("auto_ready") or case["data"].get("actions_pending"):
                 await self.finish(
                     case["id"],
-                    "review",
-                    {"auto_ready": False, "reason": "重载取消了尚未提交的自动撤回，请人工复核"},
+                    case["state"],
+                    {
+                        "auto_ready": False,
+                        "actions_pending": False,
+                        "reason": "重载取消了尚未提交的自动操作，请人工复核",
+                    },
                     now,
                     flagged=bool(case["flagged"]),
                 )
@@ -245,9 +252,12 @@ class Store:
         ):
             case = self._case(row)
             if case["data"]["message"]["mid"] == mid:
-                await self.finish(
-                    case["id"], "recalled", {"reason": "收到撤回通知"}, now, flagged=bool(case["flagged"])
-                )
+                changes = {"reason": "收到撤回通知"}
+                if case["data"].get("auto_ready"):
+                    # A queued message recalled by somebody else must not leave
+                    # its administrator alert waiting for a worker that won't pick it.
+                    changes.update(auto_ready=False, actions_pending=False)
+                await self.finish(case["id"], "recalled", changes, now, flagged=bool(case["flagged"]))
 
     async def next_recall(self):
         row = await self._row(
@@ -327,8 +337,9 @@ class Store:
             raise Deferred("该记录已有操作提交，不重复发送；请查看操作结果。")
         if await self.get("pause:" + account):
             raise Deferred("这个账号的审核操作已暂停，请检查状态。")
+        category = "kind='recall'" if kind == "recall" else "kind!='recall'"
         count = await self._row(
-            "SELECT count(*) FROM operations WHERE account=? AND at>? AND state!='not_sent'",
+            "SELECT count(*) FROM operations WHERE account=? AND at>? AND state!='not_sent' AND " + category,
             (account, now - 3600),
         )
         if count[0] >= limit:
@@ -350,11 +361,17 @@ class Store:
             if count[0] >= group_warnings:
                 raise Deferred("这个群的每小时警告次数已达上限。")
 
-    async def reserve(self, cid, kind, account, now, limit, gap, warn_minutes=60, group_warnings=5):
+    async def reserve(
+        self, cid, kind, account, now, limit, gap, warn_minutes=60, group_warnings=5, cooldowns=()
+    ):
         await self.can_write(cid, kind, account, now, limit, group_warnings)
+        keys = list(cooldowns)
         if kind == "warn":
             message = (await self.case(cid))["data"]["message"]
-            await self.put(f"warn:{account}:{message['group']}:{message['user']}", now + warn_minutes * 60)
+            keys.append((f"warn:{account}:{message['group']}:{message['user']}", now + warn_minutes * 60))
+        for key, _ in keys:
+            if now < await self.get(key, 0):
+                raise Deferred("这位成员的提醒仍在冷却期，不重复发送。")
         previous = await self._row(
             "SELECT id FROM operations WHERE case_id=? AND kind=? AND state='not_sent'", (cid, kind)
         )
@@ -373,10 +390,22 @@ class Store:
             )
             oid = cursor.lastrowid
         await self.put("gap:" + account, now + gap)
+        for key, until in keys:
+            await self.put(key, until)
+        if keys:
+            await self.put(f"op-cooldowns:{oid}", keys)
         return oid
 
     async def operation(self, oid, state, detail=""):
         await self.db.execute("UPDATE operations SET state=?,detail=? WHERE id=?", (state, detail[:500], oid))
+        if state in ("not_sent", "failed", "confirmed", "unknown"):
+            key = f"op-cooldowns:{oid}"
+            reservations = await self.get(key, [])
+            if state in ("not_sent", "failed"):
+                for name, until in reservations:
+                    if await self.get(name) == until:
+                        await self.db.execute("DELETE FROM state WHERE key=?", (name,))
+            await self.db.execute("DELETE FROM state WHERE key=?", (key,))
 
     async def operations(self, cid):
         return [dict(row) for row in await self._rows("SELECT * FROM operations WHERE case_id=?", (cid,))]
@@ -388,7 +417,8 @@ class Store:
             "WITH pending AS (SELECT id,created,"
             " ROW_NUMBER() OVER (PARTITION BY scope ORDER BY created,id) AS position"
             " FROM cases WHERE settings_revision=? AND notify_enabled=1 AND notified=0 AND human=''"
-            " AND flagged=1 AND json_type(data,'$.scores')='object')"
+            " AND flagged=1 AND json_type(data,'$.scores')='object'"
+            " AND COALESCE(json_extract(data,'$.actions_pending'),0)!=1)"
             " SELECT c.* FROM pending p JOIN cases c ON c.id=p.id"
             " ORDER BY p.position,p.created,p.id LIMIT 1000",
             (revision,),
@@ -457,7 +487,9 @@ class Store:
             (now - harmful_days * 86400,),
         )
         await self.db.execute("DELETE FROM reads WHERE at<?", (now - 3600,))
-        for row in await self._rows("SELECT key,value FROM state WHERE key LIKE 'warn:%'"):
+        for row in await self._rows(
+            "SELECT key,value FROM state WHERE key LIKE 'warn:%' OR key LIKE 'notice-member:%'"
+        ):
             if json.loads(row["value"]) < now:
                 await self.db.execute("DELETE FROM state WHERE key=?", (row["key"],))
         await self.db.execute("PRAGMA incremental_vacuum(1000)")
