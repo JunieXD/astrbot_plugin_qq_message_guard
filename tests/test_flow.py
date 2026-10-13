@@ -104,7 +104,8 @@ async def test_context_is_background_and_quote_cache_not_network(env):
     )
     case = await env.process()
     state = env.model.requests[-1][0]
-    assert state["背景"][0]["内容"] == "原发言"
+    assert state["背景"][0][2] == "原发言"
+    assert state["当前引用"]["内容"] == "原发言"
     assert state["当前待审核消息"]["内容"] == "我是在反对这句话"
     assert case["state"] == "allowed" and not env.bot.reads
 

@@ -9,8 +9,9 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from qq_message_guard.client import Result, compress_image
+from qq_message_guard.client import Intent, Result, compress_image
 from qq_message_guard.config import Advanced, Policy, Settings
+from qq_message_guard.ocr import OcrResult
 from qq_message_guard.platform import Platform
 from qq_message_guard.service import Service
 from qq_message_guard.store import Store
@@ -89,6 +90,9 @@ class Model:
     def __init__(self):
         self.score, self.failure, self.hook = 0.97, False, None
         self.requests = []
+        self.intent = Intent(
+            "participating", {"participating": 0.96, "report_or_stop": 0.02, "normal": 0.02}, 0.94
+        )
 
     async def evaluate(self, state, settings, media=()):
         self.requests.append((copy.deepcopy(state), settings, tuple(media)))
@@ -105,7 +109,16 @@ class Model:
             "usage": {"input_tokens": 123, "output_tokens": 1},
             "qev": {"backend": "llama.cpp", "prompt_version": "qev-labels-v2"},
         }
-        return Result("fake-4b", scores, 123, 1, 8.5, raw)
+        if settings.intent_enabled:
+            raw["answers"]["intent"] = {
+                "type": "choice",
+                **{
+                    "choice": self.intent.choice,
+                    "probabilities": self.intent.probabilities,
+                    "confidence": self.intent.confidence,
+                },
+            }
+        return Result("fake-4b", scores, 123, 1, 8.5, raw, self.intent if settings.intent_enabled else None)
 
 
 class Media:
@@ -121,9 +134,23 @@ class Media:
         return compress_image(buf.getvalue(), settings.image_side)
 
 
+class Ocr:
+    text = ""
+    failure = False
+    truncated = False
+
+    async def recognize(self, path, settings):
+        if self.failure:
+            from qq_message_guard.config import GuardError
+
+            raise GuardError("模拟OCR失败")
+        return OcrResult(self.text, "fake-local-ocr", 3.0, self.truncated)
+
+
 @pytest.fixture
 async def env(tmp_path):
     clock, bot, journal, model, media = Clock(), Bot(), Journal(), Model(), Media()
+    ocr = Ocr()
     policy = Policy(G)
     box = SimpleNamespace(
         settings=Settings(
@@ -140,7 +167,7 @@ async def env(tmp_path):
     context = SimpleNamespace(platform_manager=SimpleNamespace(get_insts=lambda: [inst]))
     platform = Platform(context, store, lambda: box.settings, journal, clock=clock, sleep=clock.sleep)
     service = Service(
-        lambda: box.settings, store, model, media, platform, journal, clock=clock, sleep=clock.sleep
+        lambda: box.settings, store, model, media, platform, journal, clock=clock, sleep=clock.sleep, ocr=ocr
     )
     counter = 0
 
@@ -180,6 +207,7 @@ async def env(tmp_path):
         journal=journal,
         model=model,
         media=media,
+        ocr=ocr,
         clock=clock,
         box=box,
         context=context,

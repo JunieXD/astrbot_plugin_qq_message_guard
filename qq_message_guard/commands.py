@@ -24,7 +24,7 @@ HELP = (
     "/消息审核 撤回 编号\n"
     "/消息审核 恢复 群号\n"
     "恢复表示已人工核对操作结果；旧的已提交请求不会重发。\n"
-    "群、模式、群规和阈值在插件配置中调整。"
+    "群、操作开关、群规和阈值在插件配置中调整。"
 )
 
 
@@ -66,13 +66,18 @@ class Commands:
                 or "未配置"
             )
             return (
-                f"群消息审核 v0.1.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.2.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
                 f"模型调用{calls['n']}次，成功{calls['ok']}次，失败{calls['n'] - calls['ok']}次；"
                 f"输入{calls['input']} tokens，输出{calls['output']} tokens；"
                 f"平均请求{calls['elapsed'] / 1000:.2f}秒。\n"
+                f"当前排队{stats['queue']['n']}条，最早已等{stats['queue']['oldest_seconds']:.0f}秒；"
+                f"超过{settings.advanced.max_queue_seconds}秒记为未完整审核。\n"
+                f"上下文：群内{settings.advanced.context_messages}条＋同作者"
+                f"{settings.advanced.sender_context_messages}条，无时间过滤；"
+                f"意图区分{'开' if settings.intent_enabled else '关'}，本机OCR{'开' if settings.ocr_enabled else '关'}。\n"
                 f"本插件QQ读取额度：{settings.advanced.reads_per_hour}/小时；"
                 f"写入额度：{settings.advanced.writes_per_hour}/小时。\n"
                 f"暂停：{'；'.join(stats['pauses'].values()) or '无'}\n"

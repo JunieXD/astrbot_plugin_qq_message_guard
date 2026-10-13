@@ -24,7 +24,15 @@ async def test_rejected_input_does_not_skip_other_groups(env, status):
             200,
             json={
                 "model": "OneJev-4B",
-                "answers": {"rules": {"type": "noul", "noul": 0.98}},
+                "answers": {
+                    "rules": {"type": "noul", "noul": 0.98},
+                    "intent": {
+                        "type": "choice",
+                        "choice": "participating",
+                        "probabilities": {"participating": 0.95, "report_or_stop": 0.03, "normal": 0.02},
+                        "confidence": 0.925,
+                    },
+                },
                 "usage": {"input_tokens": 500, "output_tokens": 1},
             },
         )

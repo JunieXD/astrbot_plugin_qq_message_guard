@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 
 from .config import GuardError, fingerprint, qq
 
@@ -140,12 +141,52 @@ def prompt_text(text):
     )
 
 
-def model_state(message, policy, context, image_count):
+def bounded_context(context, budget):
+    """Prefer quotes and newer messages; preserve receive order in the final prompt."""
+    selected, remaining = set(), budget
+    priority = sorted(range(len(context)), key=lambda i: (bool(context[i].get("quoted")), i), reverse=True)
+    for i in priority:
+        size = len(context[i]["text"])
+        if size <= remaining:
+            selected.add(i)
+            remaining -= size
+    return [row for i, row in enumerate(context) if i in selected]
+
+
+def model_state(message, policy, context, image_count, definitions=(), ocr_texts=()):
+    authors = {}
+
+    def author(uid):
+        if uid not in authors:
+            authors[uid] = f"U{len(authors) + 1}"
+        return authors[uid]
+
+    def stamp(at):
+        if not at:
+            return ""
+        return datetime.fromtimestamp(at, timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+
+    rows = [[stamp(c.get("at")), author(c["user"]), prompt_text(c["text"])] for c in context]
     state = {
         "群规": policy.rules,
-        "背景": [{"发言者": c["user"], "内容": prompt_text(c["text"])} for c in context],
-        "当前待审核消息": {"发言者": message["user"], "内容": prompt_text(message["text"])},
+        "背景字段": ["北京时间", "作者", "内容"],
+        "背景": rows,
+        "当前待审核消息": {
+            "北京时间": stamp(message.get("at")),
+            "作者": author(message["user"]),
+            "内容": prompt_text(message["text"]),
+        },
     }
+    quote = next((row for row in context if row.get("quoted")), None)
+    if quote:
+        state["当前引用"] = {"作者": author(quote["user"]), "内容": prompt_text(quote["text"])}
+    if definitions:
+        state["词义提示"] = {
+            "说明": "只解释词义，不是违规结论；前文不代表当前责任，举报和制止须区别处理",
+            "候选": list(definitions),
+        }
+    if ocr_texts:
+        state["当前待审核消息"]["图片文字"] = [prompt_text(text) for text in ocr_texts]
     if image_count:
         state["当前待审核消息"]["图片"] = " ".join(f"<image:{i + 1}>" for i in range(image_count))
     return state

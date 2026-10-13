@@ -48,7 +48,13 @@ class Store:
             CREATE INDEX IF NOT EXISTS read_account ON reads(account,at);
             CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS garbage (file TEXT PRIMARY KEY);
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, mid TEXT NOT NULL,
+                user TEXT NOT NULL, at REAL NOT NULL, text TEXT NOT NULL,
+                UNIQUE(scope,mid));
+            CREATE INDEX IF NOT EXISTS history_scope ON history(scope,id);
+            CREATE INDEX IF NOT EXISTS history_sender ON history(scope,user,id);
+            PRAGMA user_version=2;
         """)
         await self.call("recover", time.time())
 
@@ -86,6 +92,43 @@ class Store:
     async def put(self, key, value):
         await self.db.execute("INSERT OR REPLACE INTO state VALUES(?,?)", (key, json.dumps(value)))
 
+    async def history_context(self, message, group_count, sender_count):
+        """Receive order, with no age filter. Background never contains the current message."""
+        scope, mid = message.scope, message.mid
+        recent = await self._rows(
+            "SELECT * FROM history WHERE scope=? AND mid!=? ORDER BY id DESC LIMIT ?",
+            (scope, mid, group_count),
+        )
+        author = await self._rows(
+            "SELECT * FROM history WHERE scope=? AND user=? AND mid!=? ORDER BY id DESC LIMIT ?",
+            (scope, message.user, mid, sender_count),
+        )
+        selected = {row["id"]: dict(row) for row in [*recent, *author]}
+        quote = None
+        if message.reply and message.reply != mid:
+            quote = await self._row("SELECT * FROM history WHERE scope=? AND mid=?", (scope, message.reply))
+            if quote:
+                selected[quote["id"]] = dict(quote)
+                selected[quote["id"]]["quoted"] = True
+        return sorted(selected.values(), key=lambda row: row["id"]), bool(quote)
+
+    async def remember(self, message, capacity):
+        text = message.text[:500]
+        if message.images:
+            text += " [图片未识别]"
+        if message.unsupported:
+            text += " [其他内容未识别]"
+        await self.db.execute(
+            "INSERT OR IGNORE INTO history(scope,mid,user,at,text) VALUES(?,?,?,?,?)",
+            (message.scope, message.mid, message.user, message.at, text),
+        )
+        # Fixed count cache persists across reloads; no wall-clock cutoff.
+        await self.db.execute(
+            "DELETE FROM history WHERE scope=? AND id NOT IN"
+            " (SELECT id FROM history WHERE scope=? ORDER BY id DESC LIMIT ?)",
+            (message.scope, message.scope, capacity),
+        )
+
     async def recover(self, now):
         for row in await self._rows("SELECT id FROM cases WHERE state IN ('queued','auditing')"):
             await self.finish(row["id"], "incomplete", {"reason": "插件重载中断，未完成审核"}, now)
@@ -113,8 +156,8 @@ class Store:
         if initial != "queued":
             payload = self._clean_media_refs({**payload, "reason": reason})
         cursor = await self.db.execute(
-            "INSERT INTO cases(event_key,scope,created,updated,state,notify_enabled,settings_revision,data)"
-            " VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO cases(event_key,scope,created,updated,state,notify_enabled,settings_revision,data,flagged)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 message.event_key,
                 message.scope,
@@ -124,6 +167,11 @@ class Store:
                 int(payload.get("notification_enabled", False)),
                 payload["settings_revision"],
                 json.dumps(payload, ensure_ascii=False),
+                int(
+                    initial != "queued"
+                    and payload.get("keyword_review", False)
+                    and bool(payload.get("keyword_matches"))
+                ),
             ),
         )
         return await self.case(cursor.lastrowid)
@@ -169,6 +217,12 @@ class Store:
             changes = {**changes, "auto_ready": False, "reason": case["data"].get("reason", "收到撤回通知")}
             flagged = flagged or bool(case["flagged"])
         data = self._clean_media_refs({**case["data"], **changes})
+        if state == "incomplete":
+            flagged = (
+                flagged
+                or bool(case["flagged"])
+                or bool(data.get("keyword_review") and data.get("keyword_matches"))
+            )
         await self.db.execute(
             "UPDATE cases SET state=?,flagged=?,updated=?,action_ready=?,data=? WHERE id=?",
             (
@@ -183,6 +237,7 @@ class Store:
         return await self.case(cid)
 
     async def recalled(self, scope, mid, now):
+        await self.db.execute("DELETE FROM history WHERE scope=? AND mid=?", (scope, mid))
         for row in await self._rows(
             "SELECT * FROM cases WHERE scope=? AND state!='recalled'"
             " AND json_extract(data,'$.message.mid')=?",
@@ -368,13 +423,17 @@ class Store:
         pauses = await self._rows(
             "SELECT key,value FROM state WHERE key LIKE 'pause:%' OR key LIKE 'group-pause:%'"
         )
+        queue = await self._row("SELECT count(*) n,min(created) oldest FROM cases WHERE state='queued'")
         return {
             "states": states,
             "calls": dict(counts),
+            "queue": {"n": queue["n"], "oldest_seconds": max(0, now - (queue["oldest"] or now))},
             "pauses": {r["key"]: json.loads(r["value"]) for r in pauses if json.loads(r["value"])},
         }
 
     async def maintain(self, now, days, harmful_days):
+        # Storage retention is distinct from prompt selection: never a five-minute context cutoff.
+        await self.db.execute("DELETE FROM history WHERE at<?", (now - days * 86400,))
         rows = await self._rows(
             "SELECT * FROM cases WHERE state NOT IN ('queued','auditing') AND updated<?"
             " AND (human='误判' OR (flagged=0 AND human!='违规' AND state!='unknown') OR updated<?) LIMIT 1000",

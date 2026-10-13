@@ -13,7 +13,15 @@ from qq_message_guard.config import Advanced, Check, GuardError, Settings
 def response():
     return {
         "model": "OneJev-4B.Q4_K_M",
-        "answers": {"rules": {"type": "noul", "noul": 0.8}},
+        "answers": {
+            "rules": {"type": "noul", "noul": 0.8},
+            "intent": {
+                "type": "choice",
+                "choice": "participating",
+                "probabilities": {"participating": 0.9, "report_or_stop": 0.05, "normal": 0.05},
+                "confidence": 0.85,
+            },
+        },
         "usage": {"input_tokens": 100, "output_tokens": 1},
         "qev": {"backend": "llama.cpp"},
     }
@@ -29,6 +37,7 @@ async def test_native_api_single_request_and_auth():
         assert request.headers["authorization"] == "Bearer secret"
         assert body["model"] == "jev-latest"
         assert body["questions"]["rules"]["type"] == "noul"
+        assert body["questions"]["intent"]["type"] == "choice"
         assert "media" not in body
         return httpx.Response(200, json=response())
 
@@ -79,6 +88,55 @@ async def test_all_questions_required():
     try:
         with pytest.raises(GuardError):
             await model.evaluate("test", Settings(checks=(Check(), Check("色情"))))
+    finally:
+        await model.close()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "type", "choice", "unhashable", "sum", "keys", "winner", "confidence", "boolean"]
+)
+async def test_bad_intent_cannot_enable_automatic_actions(mutation):
+    value = response()
+    answer = value["answers"]["intent"]
+    if mutation == "missing":
+        value["answers"].pop("intent")
+    elif mutation == "type":
+        answer["type"] = "noul"
+    elif mutation == "choice":
+        answer["choice"] = "unknown"
+    elif mutation == "unhashable":
+        answer["choice"] = []
+    elif mutation == "sum":
+        answer["probabilities"]["normal"] = 0.8
+    elif mutation == "keys":
+        answer["probabilities"].pop("normal")
+    elif mutation == "winner":
+        answer["choice"] = "normal"
+    elif mutation == "confidence":
+        answer["confidence"] = -0.5
+    else:
+        answer["probabilities"]["normal"] = True
+    model = OneJev(httpx.MockTransport(lambda _: httpx.Response(200, json=value)))
+    try:
+        with pytest.raises(GuardError):
+            await model.evaluate("test", Settings())
+    finally:
+        await model.close()
+
+
+async def test_intent_can_be_disabled_for_older_model_services():
+    value = response()
+    value["answers"].pop("intent")
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=value)
+
+    model = OneJev(httpx.MockTransport(handler))
+    try:
+        result = await model.evaluate("test", Settings(intent_enabled=False))
+        assert result.intent is None and "intent" not in requests[0]["questions"]
     finally:
         await model.close()
 

@@ -5,23 +5,36 @@ import base64
 import hashlib
 import random
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import asdict
 
 from .client import OneJev
 from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncertain
-from .messages import Message, message_id, model_state
+from .decisions import decide
+from .lexicon import hints, matches, screen_output
+from .messages import Message, bounded_context, message_id, model_state
+from .ocr import Ocr
 from .platform import ApiFailure
 
 
 class Service:
     def __init__(
-        self, settings, store, model, media, platform, journal, *, clock=time.time, sleep=asyncio.sleep
+        self,
+        settings,
+        store,
+        model,
+        media,
+        platform,
+        journal,
+        *,
+        clock=time.time,
+        sleep=asyncio.sleep,
+        ocr=None,
     ):
         self.settings, self.store, self.model, self.media = settings, store, model, media
         self.platform, self.journal = platform, journal
         self.clock, self.sleep = clock, sleep
-        self.context = defaultdict(lambda: deque(maxlen=16))
+        self.ocr = ocr if ocr is not None else Ocr()
         self.invalidated = {}
         self.cancelled_cases = set()
         self.paused_scopes = set()
@@ -67,28 +80,20 @@ class Service:
             if message is None:
                 return
             policy = settings.group(message.group)
-            if (
-                policy is None
-                or not policy.enabled
-                or message.user in policy.exempt_users
-                or (policy.bot_qq and policy.bot_qq != message.account)
-            ):
+            if policy is None or not policy.enabled or (policy.bot_qq and policy.bot_qq != message.account):
                 return
-            self.context[message.scope] = deque(
-                (m for m in self.context[message.scope] if 0 <= self.clock() - m["at"] <= 300), maxlen=16
+            context, quoted = await self.store.call(
+                "history_context",
+                message,
+                settings.advanced.context_messages,
+                settings.advanced.sender_context_messages,
             )
-            context = (
-                list(self.context[message.scope])[-settings.advanced.context_messages :]
-                if (settings.advanced.context_messages)
-                else []
-            )
+            if message.user in policy.exempt_users:
+                await self.store.call("remember", message, settings.advanced.context_cache_messages)
+                return
             missing = list(message.unsupported)
-            if message.reply:
-                reply = next((m for m in self.context[message.scope] if m["mid"] == message.reply), None)
-                if reply and not any(c["mid"] == reply["mid"] for c in context):
-                    context.insert(0, reply)
-                elif reply is None:
-                    missing.append("引用消息不在本地短期缓存中")
+            if message.reply and not quoted:
+                missing.append("引用消息不在本地条数缓存中")
             item = message.data()
             item["scope"] = message.scope
             if message.images and not settings.images_enabled:
@@ -102,7 +107,7 @@ class Service:
                 missing.append("接入连接无法确认")
             payload = {
                 "message": item,
-                "context": context[:13],
+                "context": context,
                 "missing": missing,
                 "settings_revision": settings.revision,
                 "policy_revision": policy.revision,
@@ -111,6 +116,8 @@ class Service:
                 "checks": [asdict(check) for check in settings.checks],
                 "question_version": QUESTION_VERSION,
                 "binding": stamp,
+                "keyword_matches": matches(message.text, settings.terms),
+                "keyword_review": policy.keyword_review,
             }
             age = self.clock() - message.at
             initial, reason = "queued", ""
@@ -123,11 +130,14 @@ class Service:
             )
             if case is None:
                 return
-            self.context[message.scope].append(
-                {"user": message.user, "text": message.text[:500], "mid": message.mid, "at": message.at}
-            )
+            await self.store.call("remember", message, settings.advanced.context_cache_messages)
             self.journal.record(
-                "收到审核消息", case=case["id"], group=message.group, state=case["state"], missing=missing
+                "收到审核消息",
+                case=case["id"],
+                group=message.group,
+                state=case["state"],
+                missing=missing,
+                harmful=bool(case["flagged"]),
             )
             self.wake.set()
 
@@ -145,7 +155,6 @@ class Service:
                 return
             self.invalidated[(scope, mid)] = self.clock() + 600
             await self.store.call("recalled", scope, mid, self.clock())
-            self.context[scope] = deque((m for m in self.context[scope] if m["mid"] != mid), maxlen=16)
         elif str(raw.get("user_id", "")) == account and (
             kind == "group_decrease" or (kind == "group_admin" and raw.get("sub_type") == "unset")
         ):
@@ -227,6 +236,7 @@ class Service:
             missing = list(data["missing"])
             media = []
             media_records = []
+            ocr_records = []
             if settings.images_enabled:
                 for url in message["images"][: settings.advanced.max_images]:
                     try:
@@ -240,15 +250,43 @@ class Service:
                         await self.store.call("patch", cid, {"media_records": list(media_records)})
                         await asyncio.to_thread(path.write_bytes, content)
                         media.append(image)
+                        if settings.ocr_enabled:
+                            try:
+                                recognized = await self.ocr.recognize(path, settings)
+                                ocr_records.append({"file": file, **asdict(recognized)})
+                                if recognized.truncated:
+                                    missing.append("图片文字超过审核上限，仅保留开头")
+                            except GuardError as exc:
+                                missing.append(str(exc))
                     except GuardError as exc:
                         missing.append(str(exc))
             if not message["text"] and not media:
                 raise Deferred("图片未读取成功，没有可审核内容。")
             self.policy_for(case)
-            state = model_state(message, policy, data["context"], len(media))
+            context = [
+                row for row in data["context"] if (message["scope"], row["mid"]) not in self.invalidated
+            ]
+            original_count = len(context)
+            context = bounded_context(context, settings.advanced.context_chars)
+            if message["reply"] and not any(row.get("quoted") for row in context):
+                missing.append("引用原文已撤回或未能提供给模型")
+            ocr_texts = [row["text"] for row in ocr_records]
+            current_matches, definitions = hints(message, context, settings.terms, ocr_texts)
+            state = model_state(message, policy, context, len(media), definitions, ocr_texts)
             request = OneJev.request(state, settings)
             # Media bytes live in bounded JPEG files; the stored request retains placeholders.
-            await self.store.call("patch", cid, {"audit_request": request, "media_records": media_records})
+            await self.store.call(
+                "patch",
+                cid,
+                {
+                    "audit_request": request,
+                    "media_records": media_records,
+                    "ocr_records": ocr_records,
+                    "keyword_matches": current_matches,
+                    "context_used": len(context),
+                    "context_trimmed": original_count - len(context),
+                },
+            )
             started = time.monotonic()
             try:
                 result = await self.model.evaluate(state, settings, media)
@@ -277,9 +315,10 @@ class Service:
             self.model_cooldown = 0
             await self.store.call("put", "model-cooldown", 0)
             self.policy_for(case)
-            flagged = any(result.scores[c.key] >= c.review_at for c in settings.checks)
-            auto = any(result.scores[c.key] >= c.recall_at for c in settings.checks)
-            warn = any(result.scores[c.key] >= c.warn_at for c in settings.checks)
+            decision = decide(result, settings, policy, current_matches)
+            if message["reply"] and (message["scope"], message["reply"]) in self.invalidated:
+                missing.append("引用原文在审核期间被撤回")
+            flagged, auto, warn = decision.flagged, decision.recall, decision.warn
             state = "incomplete" if missing else "review" if flagged else "allowed"
             case = await self.store.call(
                 "finish",
@@ -289,7 +328,12 @@ class Service:
                     "scores": result.scores,
                     "actual_model": result.model,
                     "missing": missing,
-                    "reason": "；".join(missing),
+                    "reason": "；".join([*missing, *([decision.reason] if decision.reason else [])]),
+                    "intent": asdict(result.intent) if result.intent else None,
+                    "action_intent_ok": bool(
+                        not settings.intent_enabled
+                        or (result.intent and result.intent.permits_action(settings.intent_confidence))
+                    ),
                     "audit_response": result.raw_response,
                     "usage": {
                         "input_tokens": result.input_tokens,
@@ -342,6 +386,10 @@ class Service:
             raise Deferred("消息超出本插件允许的撤回时间，请在QQ中人工处理。")
         if not manual and (not policy.auto_recall or case["data"].get("missing") or case["human"]):
             raise Deferred("本条记录不满足自动撤回条件。")
+        if not manual and settings.intent_enabled and not case["data"].get("action_intent_ok"):
+            raise Deferred("发言意图不明确或并非参与违规，不自动撤回。")
+        if not manual and message.get("reply") and (message["scope"], message["reply"]) in self.invalidated:
+            raise Deferred("引用原文已经撤回，请人工复核当前发言。")
         if case["state"] in ("recalled", "unknown") or case["human"] == "误判":
             raise Deferred("记录已撤回、结果不明或标记为误判，不再操作。")
         stamp = self.platform.bot(message["platform"], message["account"])[1]
@@ -611,10 +659,13 @@ class Service:
                 or case["data"].get("missing")
                 or case["human"]
                 or cid in self.cancelled_cases
+                or (latest.intent_enabled and not case["data"].get("action_intent_ok"))
             ):
                 raise Deferred("本条记录不满足群内警告条件。")
             if message["scope"] in self.paused_scopes or case["state"] == "unknown":
                 raise Deferred("这个群已暂停或操作结果不明，不发送警告。")
+            if message.get("reply") and (message["scope"], message["reply"]) in self.invalidated:
+                raise Deferred("引用原文已经撤回，不自动警告当前成员。")
             if (
                 (message["scope"], message["mid"]) in self.invalidated or case["state"] == "recalled"
             ) and not own_recall:
@@ -655,6 +706,7 @@ class Service:
         )
         if len(text) > 2000:
             raise GuardError("警告模板展开后超过2000字，请缩短模板。")
+        screen_output(text, settings.terms)
         gate()
         await self.sleep(
             random.uniform(settings.advanced.action_min_seconds, settings.advanced.action_max_seconds)

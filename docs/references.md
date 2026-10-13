@@ -10,19 +10,29 @@
 - [`content_moderation.go`](https://github.com/Wei-Shaw/sub2api/blob/4d9ac3e482106d2da3a39fe3e546d8d6801f1cc1/backend/internal/service/content_moderation.go)：独立类别阈值、有界后台队列、耗时和排队统计、审核错误记录。
 - [`prompt_worker.go`](https://github.com/Wei-Shaw/sub2api/blob/4d9ac3e482106d2da3a39fe3e546d8d6801f1cc1/backend/internal/securityaudit/prompt_worker.go)：任务生命周期与停止、运行指标。
 
-区别：接口网关可以在请求发出前阻断，而 QQ bot 只能在消息发出后处理。本插件不照搬 13 项全量请求或网关封禁策略；CPU 后端默认只问群规。上述 TypeSafe 审核实现当时跳过图片，本插件使用 OneJev 本地的真实视觉输入，明确记录覆盖缺失。
+区别：接口网关可以在请求发出前阻断，而 QQ bot 只能在消息发出后处理。本插件不照搬 13 项全量请求或网关封禁策略；CPU 后端默认问群规与发言意图。上述 TypeSafe 审核实现当时跳过图片，本插件使用 OneJev 本地的真实视觉输入，明确记录覆盖缺失。
 
 ## OneJev
 
 参考 [OmniJev/OneJev](https://github.com/OmniJev/OneJev)，调研时上游提交 `6122519058af23504a33d944f0e63b2d868c8a4b`；本机部署来源记录为 `81d5d26`，已读取实际部署代码并检查健康响应。
 
 - [`qev/schema.py`](https://github.com/OmniJev/OneJev/blob/6122519058af23504a33d944f0e63b2d868c8a4b/qev/schema.py)：`state`、`questions`、`criteria.true/false`、`answers.*.noul` 和 `usage`。
+- 同一 schema 的 `ChoiceQuestion` / `ChoiceAnswer` 和 `qev/answers.py` 的 `make_choice()`：原生类别选项、概率分布和 concentration confidence。意图分类使用三选一，不能与二元审核分值混用。
 - [`qev/prompt.py`](https://github.com/OmniJev/OneJev/blob/6122519058af23504a33d944f0e63b2d868c8a4b/qev/prompt.py)：状态与问题的渲染，原生选项判断，不是自由生成理由。
 - [`qev/server.py`](https://github.com/OmniJev/OneJev/blob/6122519058af23504a33d944f0e63b2d868c8a4b/qev/server.py)：`POST /v1/systemone`、模型别名、`debias`、响应诊断信息。
 - [`qev/llamacpp.py`](https://github.com/OmniJev/OneJev/blob/6122519058af23504a33d944f0e63b2d868c8a4b/qev/llamacpp.py)：本机后端串行执行和锁，多问题仍有额外成本。
 - [`qev/media.py`](https://github.com/OmniJev/OneJev/blob/6122519058af23504a33d944f0e63b2d868c8a4b/qev/media.py)：`<image:N>` 必须按顺序引用，使用 `media` 中的 data URI。
 
 采用服务原生返回的实际 token 统计，不自行估算。固定 `debias=1`，避免实时审核无依据地多倍增加推理成本。对于不可信内容中的同名媒体占位符先转义，只给应用插入的占位符绑定图片。
+
+## 上下文、词库与OCR
+
+- [group_guardian](https://github.com/zcj-ui/astrbot_plugin_group_guardian) 的群背景与同作者上下文组织，以及 [引用归责问题 #33](https://github.com/zcj-ui/astrbot_plugin_group_guardian/issues/33)：引用原作者内容应与当前作者的新发言分开。
+- [sensitive-word](https://github.com/houbb/sensitive-word) 的文字归一化思路；本插件采用少量词义而非大范围词库封禁。
+- [Windows.Media.Ocr](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine)：本机中文文字提取，经 WinRT 读取压缩图片；实际使用 zh-Hans-CN。
+- [Tesseract](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html)：本机命令行输出文字，使用 chi_sim+eng。程序路径和图片路径通过参数数组传入，不执行群消息内容或拼接 shell 命令。
+
+上下文无时间过滤，缓存以条数约束并受数据保留期管理。词库命中只生成复核候选；举报制止、正常与低置信度意图阻止自动操作。以上设计通过本机选定历史样本和构造对照验证，不代表已证明可以避免腾讯封群。
 
 ## AstrBot 与 NapCat
 
