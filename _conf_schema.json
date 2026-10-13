@@ -1,0 +1,310 @@
+{
+  "enabled": {
+    "description": "启用群消息审核",
+    "type": "bool",
+    "default": false,
+    "hint": "先添加群。所有操作开关关闭时只记录审核结果。"
+  },
+  "groups": {
+    "description": "要审核的群",
+    "type": "template_list",
+    "default": [],
+    "templates": {
+      "group": {
+        "name": "添加一个群",
+        "display_item": "group_id",
+        "items": {
+          "group_id": {
+            "description": "QQ群号",
+            "type": "string",
+            "default": ""
+          },
+          "enabled": {
+            "description": "审核这个群",
+            "type": "bool",
+            "default": true
+          },
+          "rules": {
+            "description": "群规",
+            "type": "text",
+            "default": "允许正常交流、合理批评、新闻转述、求助、防骗提醒和引用并反对不良行为。禁止实施或招揽诈骗、色情资源或服务、人肉隐私及隐私交易、暴力威胁和教唆、恶意人身辱骂或群体歧视，以及未经管理员许可的商业推广。普通政治政策讨论本身不算违规。",
+            "hint": "写清禁止的行为和允许的例外。话题分类不等于违规。"
+          },
+          "auto_recall": {
+            "description": "自动撤回",
+            "type": "bool",
+            "default": false,
+            "hint": "仅完整审核且达到撤回门槛时执行；需要bot为管理员。先观察实际效果。"
+          },
+          "warn_member": {
+            "description": "在群内@成员警告",
+            "type": "bool",
+            "default": false,
+            "hint": "与撤回、管理员通知相互独立。仅达到警告门槛才发，管理员和群主不自动警告。"
+          },
+          "warning_text": {
+            "description": "群内警告内容",
+            "type": "text",
+            "default": "请遵守群规。你刚才的发言可能违反了本群规定，请停止相关内容；如有异议，请联系管理员复核。",
+            "hint": "插件会自动@成员。可用占位符：{群号}、{QQ号}、{审核项}。不自动转发原文。"
+          },
+          "notify_private": {
+            "description": "私聊通知管理员",
+            "type": "bool",
+            "default": false,
+            "hint": "通知下方配置的私聊接收人。默认每群10分钟合并一次。"
+          },
+          "notify_group": {
+            "description": "通知到管理员群",
+            "type": "bool",
+            "default": false,
+            "hint": "与私聊通知独立，可同时开启。请先将bot加入管理群。"
+          },
+          "admin_group": {
+            "description": "管理员群号",
+            "type": "string",
+            "default": "",
+            "hint": "开启管理员群通知时填写，不可与被审核群相同。"
+          },
+          "bot_qq": {
+            "description": "负责的机器人QQ",
+            "type": "string",
+            "default": "",
+            "hint": "通常留空；多QQ接入时填写。"
+          },
+          "exempt_users": {
+            "description": "不审核的QQ号",
+            "type": "list",
+            "default": [],
+            "hint": "每项一个QQ号。bot自己的消息始终忽略。管理员仍审核，只是不自动撤回或警告。"
+          }
+        }
+      }
+    }
+  },
+  "checks": {
+    "description": "审核项目与门槛",
+    "type": "template_list",
+    "default": [
+      {
+        "__template_key": "check",
+        "name": "群规",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9
+      }
+    ],
+    "hint": "默认只问群规，读取该群自定义规则。需要时再添加独立项目；CPU后端增加项目会变慢。默认门槛只是起始值，不代表真实准确率。",
+    "templates": {
+      "check": {
+        "name": "添加审核项目",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "description": "审核项目",
+            "type": "string",
+            "default": "群规",
+            "options": [
+              "群规",
+              "诈骗与隐私",
+              "色情",
+              "威胁与攻击"
+            ]
+          },
+          "review_at": {
+            "description": "复核与管理员通知门槛",
+            "type": "float",
+            "default": 0.55,
+            "hint": "0.01～1；达到任一项目即记录为可疑。"
+          },
+          "recall_at": {
+            "description": "自动撤回门槛",
+            "type": "float",
+            "default": 0.9,
+            "hint": "不能低于复核门槛。群的自动撤回开关仍需开启。"
+          },
+          "warn_at": {
+            "description": "群内@警告门槛",
+            "type": "float",
+            "default": 0.9,
+            "hint": "不能低于复核门槛。群的警告开关仍需开启。"
+          }
+        }
+      }
+    }
+  },
+  "base_url": {
+    "description": "本地OneJev服务地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8000",
+    "hint": "填写服务根地址；插件自动加 /v1/systemone。不要填写 /v1。"
+  },
+  "model": {
+    "description": "模型名称",
+    "type": "string",
+    "default": "jev-latest",
+    "hint": "可留jev-latest；当前本机实际模型为OneJev-4B.Q4_K_M。"
+  },
+  "api_key": {
+    "description": "服务API Key",
+    "type": "string",
+    "default": "",
+    "hint": "本机服务无密钥，留空。连接其他受保护服务时才填写。"
+  },
+  "images_enabled": {
+    "description": "审核图片",
+    "type": "bool",
+    "default": true,
+    "hint": "文字和当前消息图片一起提交。语音、视频、文件和转发首版不展开。"
+  },
+  "notify_users": {
+    "description": "私聊通知接收人QQ",
+    "type": "list",
+    "default": [],
+    "hint": "每项一个QQ号，最多5人。需对应群开启私聊通知；命令查看权限仍由AstrBot管理员名单控制。"
+  },
+  "advanced": {
+    "description": "更多设置（默认即可）",
+    "type": "object",
+    "items": {
+      "queue_size": {
+        "description": "最多排队几条",
+        "type": "int",
+        "default": 100,
+        "hint": "100条含正在审核的消息；满队列记为未完整审核"
+      },
+      "max_queue_seconds": {
+        "description": "最长排队秒数",
+        "type": "int",
+        "default": 90,
+        "hint": "超时不会补发处罚，保留未完整审核记录"
+      },
+      "context_messages": {
+        "description": "附带几条近期背景消息",
+        "type": "int",
+        "default": 4,
+        "hint": "只使用本插件收到的最近5分钟文字，每条最多500字，不拉历史"
+      },
+      "max_text_chars": {
+        "description": "每条最多审核多少字",
+        "type": "int",
+        "default": 4000,
+        "hint": "超过上限记为覆盖不完整，不自动撤回或警告"
+      },
+      "max_images": {
+        "description": "每条最多审核几张图",
+        "type": "int",
+        "default": 2,
+        "hint": "超过数量不会自动撤回或警告"
+      },
+      "image_mb": {
+        "description": "每张图片最大MB",
+        "type": "int",
+        "default": 8,
+        "hint": "超大或动态图记为未完整审核"
+      },
+      "image_side": {
+        "description": "图片压缩后的最长边",
+        "type": "int",
+        "default": 1280,
+        "hint": "像素，默认1280；过小可能看不清文字"
+      },
+      "image_timeout": {
+        "description": "图片下载最长秒数",
+        "type": "int",
+        "default": 12,
+        "hint": "只下载受支持的QQ媒体地址，不打开消息中的普通链接或本地文件"
+      },
+      "max_action_seconds": {
+        "description": "消息发出多久内允许操作（秒）",
+        "type": "int",
+        "default": 120,
+        "hint": "这是本插件的保护窗口，不是QQ官方撤回时限"
+      },
+      "action_min_seconds": {
+        "description": "撤回／警告前最短等待秒数",
+        "type": "float",
+        "default": 0,
+        "hint": "随机等待，默认0～1秒，及时处理优先"
+      },
+      "action_max_seconds": {
+        "description": "撤回／警告前最长等待秒数",
+        "type": "float",
+        "default": 1,
+        "hint": "不小于最短值"
+      },
+      "account_gap_min": {
+        "description": "账号写操作最短间隔秒数",
+        "type": "float",
+        "default": 2,
+        "hint": "适用于本插件；若发现现有共享协调器则接入它"
+      },
+      "account_gap_max": {
+        "description": "账号写操作最长间隔秒数",
+        "type": "float",
+        "default": 5,
+        "hint": "不小于最短值；随机延迟不能保证避免QQ风控"
+      },
+      "writes_per_hour": {
+        "description": "每个账号每小时最多写操作",
+        "type": "int",
+        "default": 30,
+        "hint": "撤回、警告和各路通知合计；提交失败或结果不明也占额度"
+      },
+      "reads_per_hour": {
+        "description": "每个账号每小时最多QQ查询",
+        "type": "int",
+        "default": 600,
+        "hint": "仅本插件的资料与消息查询；本地get_status/get_login_info不计入"
+      },
+      "notify_minutes": {
+        "description": "管理员通知合并间隔（分钟）",
+        "type": "int",
+        "default": 10,
+        "hint": "每个来源群分别计算，不逐条刷屏"
+      },
+      "recovery_seconds": {
+        "description": "断线恢复缓冲秒数",
+        "type": "int",
+        "default": 300,
+        "hint": "连接变化时暂缓操作；旧连接消息不补发处罚"
+      },
+      "warn_cooldown_minutes": {
+        "description": "同一成员警告冷却分钟数",
+        "type": "int",
+        "default": 60,
+        "hint": "按账号、群、成员分别计算，不频繁重复@"
+      },
+      "group_warnings_per_hour": {
+        "description": "每群每小时最多警告几次",
+        "type": "int",
+        "default": 5,
+        "hint": "默认5次；仍记录其他命中供管理员复核"
+      },
+      "retention_days": {
+        "description": "普通审核记录保留天数",
+        "type": "int",
+        "default": 14,
+        "hint": "默认14天，包括正文、背景、审核请求、响应、统计与图片"
+      },
+      "harmful_retention_days": {
+        "description": "可疑／违规记录保留天数",
+        "type": "int",
+        "default": 60,
+        "hint": "默认60天。人工确认误判改用普通期限；不能短于普通期限"
+      },
+      "log_mb": {
+        "description": "单个日志文件最大MB",
+        "type": "int",
+        "default": 10,
+        "hint": "按北京时间日期分文件，达到大小新开分段；普通14天，可疑60天，随保留配置调整"
+      }
+    }
+  },
+  "timeout_seconds": {
+    "description": "审核请求超时秒数",
+    "type": "int",
+    "default": 30,
+    "hint": "5～120秒；超时不能证明服务端停止计算，不立即重试。"
+  }
+}

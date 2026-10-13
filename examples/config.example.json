@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "groups": [
+    {
+      "__template_key": "group",
+      "group_id": "123456789",
+      "rules": "允许正常交流、合理批评、新闻转述、求助、防骗提醒和引用并反对不良行为。禁止实施或招揽诈骗、色情资源或服务、人肉隐私及隐私交易、暴力威胁和教唆、恶意人身辱骂或群体歧视，以及未经管理员许可的商业推广。普通政治政策讨论本身不算违规。",
+      "auto_recall": false,
+      "warn_member": false,
+      "notify_private": false,
+      "notify_group": false,
+      "admin_group": "",
+      "warning_text": "请遵守群规。你刚才的发言可能违反了本群规定，请停止相关内容；如有异议，请联系管理员复核。"
+    }
+  ],
+  "checks": [
+    {
+      "__template_key": "check",
+      "name": "群规",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9
+    }
+  ],
+  "notify_users": []
+}
