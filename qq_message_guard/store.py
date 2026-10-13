@@ -388,7 +388,7 @@ class Store:
             "WITH pending AS (SELECT id,created,"
             " ROW_NUMBER() OVER (PARTITION BY scope ORDER BY created,id) AS position"
             " FROM cases WHERE settings_revision=? AND notify_enabled=1 AND notified=0 AND human=''"
-            " AND (flagged=1 OR state='incomplete'))"
+            " AND flagged=1 AND json_type(data,'$.scores')='object')"
             " SELECT c.* FROM pending p JOIN cases c ON c.id=p.id"
             " ORDER BY p.position,p.created,p.id LIMIT 1000",
             (revision,),

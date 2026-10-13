@@ -13,6 +13,7 @@ from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncer
 from .decisions import decide
 from .lexicon import hints, matches, screen_output
 from .messages import Message, bounded_context, message_id, model_state
+from .notifications import is_reviewable, notification_text
 from .ocr import Ocr
 from .platform import ApiFailure
 
@@ -35,6 +36,7 @@ class Service:
         self.platform, self.journal = platform, journal
         self.clock, self.sleep = clock, sleep
         self.ocr = ocr if ocr is not None else Ocr()
+        self.connections = {}
         self.invalidated = {}
         self.cancelled_cases = set()
         self.paused_scopes = set()
@@ -49,6 +51,20 @@ class Service:
         self.last_maintenance = 0
 
     async def start(self):
+        # Observe local websocket identities only; never query or backfill QQ history.
+        context = getattr(self.platform, "context", None)
+        if context is not None:
+            for instance in context.platform_manager.get_insts():
+                if instance.meta().name != "aiocqhttp":
+                    continue
+                clients = getattr(getattr(instance, "bot", None), "_wsr_api_clients", {})
+                if isinstance(clients, dict):
+                    for account in clients:
+                        try:
+                            _, stamp = self.platform.bot(str(instance.meta().id), str(account))
+                        except Deferred:
+                            continue
+                        self.connections[(str(instance.meta().id), str(account))] = (stamp, self.clock())
         self.model_cooldown = await self.store.call("get", "model-cooldown", 0)
         self.tasks = {
             asyncio.create_task(self.worker()),
@@ -101,8 +117,14 @@ class Service:
             if len(message.images) > settings.advanced.max_images:
                 missing.append("图片数量超过审核上限")
             stamp = None
+            online_since = self.clock()
             try:
                 _, stamp = self.platform.bot(message.platform, message.account)
+                key = (message.platform, message.account)
+                previous = self.connections.get(key)
+                if previous is None or previous[0] != stamp:
+                    self.connections[key] = (stamp, self.clock())
+                online_since = self.connections[key][1]
             except Deferred:
                 missing.append("接入连接无法确认")
             payload = {
@@ -121,7 +143,9 @@ class Service:
             }
             age = self.clock() - message.at
             initial, reason = "queued", ""
-            if age < -30 or age > settings.advanced.max_queue_seconds:
+            if message.at < int(online_since):
+                initial, reason = "incomplete", "连接前的旧消息已跳过，只审核在线期间的新发言"
+            elif age < -30 or age > settings.advanced.max_queue_seconds:
                 initial, reason = "incomplete", "消息时间过旧或异常，未进行实时审核"
             elif not message.text and (not message.images or not settings.images_enabled):
                 initial, reason = "incomplete", "当前消息没有首版可审核的文字或图片"
@@ -130,7 +154,8 @@ class Service:
             )
             if case is None:
                 return
-            await self.store.call("remember", message, settings.advanced.context_cache_messages)
+            if message.at >= int(online_since):
+                await self.store.call("remember", message, settings.advanced.context_cache_messages)
             self.journal.record(
                 "收到审核消息",
                 case=case["id"],
@@ -261,7 +286,8 @@ class Service:
                     except GuardError as exc:
                         missing.append(str(exc))
             if not message["text"] and not media:
-                raise Deferred("图片未读取成功，没有可审核内容。")
+                await self.store.call("patch", cid, {"missing": list(dict.fromkeys(missing))})
+                raise Deferred("；".join(missing) or "图片未读取成功，没有可审核内容。")
             self.policy_for(case)
             context = [
                 row for row in data["context"] if (message["scope"], row["mid"]) not in self.invalidated
@@ -545,26 +571,14 @@ class Service:
                     "anchor": cases[0]["id"],
                 }
                 await self.store.call("put", batch_key, batch)
-            cases = [c for c in await self.store.call("batch_cases", batch["ids"]) if not c["human"]]
+            cases = [c for c in await self.store.call("batch_cases", batch["ids"]) if is_reviewable(c)]
             if not cases:
                 await self.store.call("notified", batch["ids"])
                 await self.store.call("put", batch_key, None)
                 continue
             first, message = cases[0], cases[0]["data"]["message"]
             policy = settings.group(message["group"])
-            count = sum(bool(c["flagged"]) for c in cases)
-            incomplete = sum(c["state"] == "incomplete" for c in cases)
-            text = (
-                f"群消息审核\n群：{message['group']}\n新增可疑记录：{count}；未完整审核：{incomplete}。\n"
-                f"编号：{'、'.join('#' + str(c['id']) for c in cases[:12])}\n"
-                + "\n".join(
-                    f"#{c['id']} QQ{c['data']['message']['user']}："
-                    f"{'已撤回' if c['state'] == 'recalled' else '未完整审核' if c['state'] == 'incomplete' else '请复核'}"
-                    for c in cases[:8]
-                )
-                + "\n"
-                f"私聊 /消息审核 待复核 {message['group']} 查看。"
-            )
+            text = notification_text(cases, policy, settings)
 
             def gate():
                 latest, policy = self.policy_for(first)

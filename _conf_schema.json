@@ -58,7 +58,7 @@
             "description": "通知到管理员群",
             "type": "bool",
             "default": false,
-            "hint": "与私聊通知独立，可同时开启。请先将bot加入管理群。"
+            "hint": "仅向管理群合并提醒审核发现的疑点；下载失败、排队超时等运行问题只留日志。请先将bot加入管理群。"
           },
           "admin_group": {
             "description": "管理员群号",
@@ -83,6 +83,12 @@
             "type": "bool",
             "default": true,
             "hint": "只匹配当前文字和当前图片OCR。命中不代表违规，不单凭词库自动处罚；明确的举报制止或正常交流可免除词库提示。"
+          },
+          "display_name": {
+            "description": "通知中显示的群名称",
+            "type": "string",
+            "default": "",
+            "hint": "可留空；例如填鼠群，方便管理员辨认来源。"
           }
         }
       }

@@ -134,6 +134,7 @@ class Policy:
     bot_qq: str = ""
     exempt_users: tuple[str, ...] = ()
     keyword_review: bool = True
+    display_name: str = ""
 
     @property
     def revision(self):
@@ -219,6 +220,9 @@ def parse_settings(raw):
         except ValueError as exc:
             raise GuardError("警告占位符只支持 {群号}、{QQ号}、{审核项}。") from exc
         group_id = qq(item.get("group_id", ""), "群号")
+        display_name = item.get("display_name", "")
+        if not isinstance(display_name, str) or len(display_name.strip()) > 40:
+            raise GuardError("通知中显示的群名称最多40字。")
         admin_group = qq(item.get("admin_group", ""), "管理员群号", optional=True)
         notify_group = switch(item, "notify_group", False)
         if notify_group and (not admin_group or admin_group == group_id):
@@ -240,6 +244,7 @@ def parse_settings(raw):
                 bot_qq=qq(item.get("bot_qq", ""), optional=True),
                 exempt_users=tuple(sorted({qq(x) for x in users})),
                 keyword_review=switch(item, "keyword_review", True),
+                display_name=display_name.strip(),
             )
         )
     if len({p.group_id for p in policies}) != len(policies):

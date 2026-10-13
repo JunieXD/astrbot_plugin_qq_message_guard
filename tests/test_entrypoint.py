@@ -53,6 +53,7 @@ def plugin_class(monkeypatch, tmp_path):
 class Event:
     def __init__(self, admin, text):
         self.admin, self.text, self.stopped = admin, text, False
+        self.sent = []
         self.message_obj = SimpleNamespace(raw_message={"self_id": "100001"})
         self.platform_meta = SimpleNamespace(id="qq")
 
@@ -71,6 +72,9 @@ class Event:
     def plain_result(self, text):
         return text
 
+    async def send(self, result):
+        self.sent.append(result)
+
 
 async def test_initialize_command_permissions_and_clean_shutdown(plugin_class, env):
     plugin = plugin_class(env.context, {})
@@ -78,10 +82,11 @@ async def test_initialize_command_permissions_and_clean_shutdown(plugin_class, e
     try:
         assert plugin.service is not None and plugin.start_error == ""
         denied = Event(False, "/消息审核 状态")
-        assert [r async for r in plugin.command(denied)] == [] and denied.stopped
+        await plugin.command(denied)
+        assert not denied.sent and denied.stopped
         allowed = Event(True, "/消息审核 状态")
-        result = [r async for r in plugin.command(allowed)]
-        assert len(result) == 1 and "总开关：关闭" in result[0]
+        await plugin.command(allowed)
+        assert allowed.stopped and len(allowed.sent) == 1 and "总开关：关闭" in allowed.sent[0]
     finally:
         await plugin.terminate()
     assert plugin.service is None and plugin.store is None
@@ -91,6 +96,9 @@ async def test_invalid_config_can_be_reloaded_without_leaked_lock(plugin_class, 
     plugin = plugin_class(env.context, {"timeout_seconds": 1})
     await plugin.initialize()
     assert plugin.service is None and "超时" in plugin.start_error
+    event = Event(True, "/消息审核 状态")
+    await plugin.command(event)
+    assert event.stopped and len(event.sent) == 1 and "超时" in event.sent[0]
     plugin.raw_config = {}
     await plugin.initialize()
     try:

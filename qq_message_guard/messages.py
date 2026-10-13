@@ -56,6 +56,7 @@ class Message:
     reply: str
     unsupported: tuple[str, ...]
     content_hash: str
+    sender_name: str = ""
 
     @property
     def event_key(self):
@@ -114,6 +115,8 @@ class Message:
             unknown.append("文字过长，仅保留开头")
         sender = raw.get("sender")
         sender = sender if isinstance(sender, dict) else {}
+        name = sender.get("card") or sender.get("nickname") or ""
+        name = name[:80] if isinstance(name, str) else ""
         return cls(
             platform,
             account,
@@ -127,6 +130,7 @@ class Message:
             reply,
             tuple(dict.fromkeys(unknown)),
             identity,
+            name,
         )
 
 

@@ -17,7 +17,7 @@ from .qq_message_guard.service import Service
 from .qq_message_guard.store import Store
 
 
-@register("astrbot_plugin_qq_message_guard", "JunieXD", "本地OneJev群消息审核与复核撤回", "0.2.0")
+@register("astrbot_plugin_qq_message_guard", "JunieXD", "本地OneJev群消息审核与复核撤回", "0.2.1")
 class QQMessageGuard(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context=context, config=config)
@@ -44,7 +44,7 @@ class QQMessageGuard(Star):
             await self.service.start()
             self.start_error = ""
             logger.info(
-                "QQ 群消息审核 v0.2.0 已加载；总开关：%s；群数：%s；审核项：%s。",
+                "QQ 群消息审核 v0.2.1 已加载；总开关：%s；群数：%s；审核项：%s。",
                 settings.enabled,
                 len(settings.groups),
                 len(settings.checks),
@@ -108,7 +108,7 @@ class QQMessageGuard(Star):
             return
         service = self.service
         if service is None:
-            yield event.plain_result(self.start_error or "插件正在停止。")
+            await asyncio.wait_for(event.send(event.plain_result(self.start_error or "插件正在停止。")), 15)
             return
         task = asyncio.current_task()
         service.jobs.add(task)
@@ -125,4 +125,5 @@ class QQMessageGuard(Star):
             result = "命令未完成，请检查插件状态和日志。"
         finally:
             service.jobs.discard(task)
-        yield event.plain_result(result)
+        # AstrBot stops its response pipeline after stop_event(), including yielded results.
+        await asyncio.wait_for(event.send(event.plain_result(result)), 15)

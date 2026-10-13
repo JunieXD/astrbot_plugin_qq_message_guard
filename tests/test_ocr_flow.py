@@ -34,3 +34,12 @@ async def test_ocr_can_be_disabled_without_disabling_image_model(env):
     case = await env.process()
     assert case["state"] == "review" and not case["data"]["ocr_records"]
     assert not case["data"]["missing"] and len(env.model.requests[-1][2]) == 1
+
+
+async def test_image_only_failure_keeps_the_actual_diagnostic(env):
+    env.media.failure = True
+    await env.speak(segments=IMAGE)
+    case = await env.process()
+    assert case["state"] == "incomplete" and "图片下载失败" in case["data"]["reason"]
+    assert "图片下载失败" in case["data"]["missing"]
+    assert not env.model.requests and not env.bot.writes
