@@ -95,9 +95,10 @@ class Commands:
                 self.s.journal.record("人工请求撤回", case=cid, actor=actor)
                 return await self.s.recall(case, manual=True)
             data, message = case["data"], case["data"]["message"]
-            stamp = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8))).strftime(
-                "%m月%d日 %H:%M:%S"
-            )
+            local = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8)))
+            # Windows Python 3.10's strftime encodes the format through LC_TIME.
+            # Keep Chinese literals outside the OS formatter, independent of locale.
+            stamp = f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}:{local.second:02d}"
             ops = await self.s.store.call("operations", cid)
             return (
                 lines(case) + f"\n时间：{stamp}\n模型：{data.get('actual_model', '未完成调用')}\n"

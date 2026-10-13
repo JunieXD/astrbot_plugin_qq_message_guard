@@ -351,6 +351,7 @@ async def test_commands_show_usage_and_mark_without_writes(env):
     assert "误判" in result and not env.bot.writes
     view = await c.run(f"/消息审核 查看 {case['id']}", ADMIN, "qq", A)
     assert "fake-4b" in view and "普通群聊消息" in view
+    assert "时间：1月15日 16:00:00" in view
 
 
 async def test_per_group_queue_fairness(env):
