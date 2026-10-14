@@ -145,6 +145,14 @@ def prompt_text(text):
     )
 
 
+def audit_text(message, quote=None):
+    """Actual reply content is part of this publication, unlike ordinary context."""
+    text = prompt_text(message["text"])
+    if quote is not None:
+        return f"正文：{text}\n实际引用内容：{prompt_text(quote['text'])}"
+    return text
+
+
 def bounded_context(context, budget):
     """Prefer quotes and newer messages; preserve receive order in the final prompt."""
     selected, remaining = set(), budget
@@ -170,6 +178,7 @@ def model_state(message, policy, context, image_count, definitions=(), ocr_texts
             return ""
         return datetime.fromtimestamp(at, timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
 
+    quote = next((row for row in context if row.get("quoted")), None)
     rows = [[stamp(c.get("at")), author(c["user"]), prompt_text(c["text"])] for c in context]
     state = {
         "群规": policy.rules,
@@ -178,15 +187,14 @@ def model_state(message, policy, context, image_count, definitions=(), ocr_texts
         "当前待审核消息": {
             "北京时间": stamp(message.get("at")),
             "作者": author(message["user"]),
-            "内容": prompt_text(message["text"]),
+            "内容": audit_text(message, quote),
         },
     }
-    quote = next((row for row in context if row.get("quoted")), None)
     if quote:
-        state["当前引用"] = {"作者": author(quote["user"]), "内容": prompt_text(quote["text"])}
+        state["当前待审核消息"]["引用作者"] = author(quote["user"])
     if definitions:
         state["词义提示"] = {
-            "说明": "只解释词义，不是违规结论；前文不代表当前责任，举报和制止须区别处理",
+            "说明": "只解释词义，不是违规结论；前文仅消歧，实际引用按类别定义审核",
             "候选": list(definitions),
         }
     if ocr_texts:

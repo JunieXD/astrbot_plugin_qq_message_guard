@@ -10,7 +10,8 @@ async def test_ocr_evidence_and_original_image_both_reach_model(env):
     env.ocr.text = "你 牛 子 是否异于常人"
     await env.speak(segments=IMAGE)
     case = await env.process()
-    assert case["state"] == "review" and case["data"]["keyword_matches"]
+    assert case["state"] == "allowed" and case["data"]["keyword_matches"]
+    assert not case["flagged"] and not case["data"]["auto_ready"]
     state, _, media = env.model.requests[-1]
     assert state["当前待审核消息"]["图片文字"] == [env.ocr.text]
     assert len(media) == 1 and "<image:1>" in state["当前待审核消息"]["图片"]

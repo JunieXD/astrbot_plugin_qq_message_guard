@@ -13,7 +13,7 @@ from .categories import CATEGORIES
 from .client import OneJev
 from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncertain
 from .decisions import decide
-from .lexicon import hints, matches, screen_output
+from .lexicon import hints, screen_output
 from .messages import Message, bounded_context, message_id, model_state
 from .notifications import is_notifiable, notification_text
 from .ocr import Ocr
@@ -141,7 +141,7 @@ class Service:
                 "checks": [asdict(check) for check in settings.checks],
                 "question_version": QUESTION_VERSION,
                 "binding": stamp,
-                "keyword_matches": matches(message.text, settings.terms),
+                "keyword_matches": hints(item, context, settings.terms)[0],
                 "keyword_review": policy.keyword_review,
             }
             age = self.clock() - message.at
@@ -539,7 +539,7 @@ class Service:
                 case, settings, lambda: self.model.evaluate(state, settings, media)
             )
             self.policy_for(case)
-            decision = decide(result, settings, policy, current_matches)
+            decision = decide(result, settings)
             if message["reply"] and (message["scope"], message["reply"]) in self.invalidated:
                 missing.append("引用原文在审核期间被撤回")
             flagged, auto, warn = decision.flagged, decision.recall, decision.warn
@@ -559,11 +559,6 @@ class Service:
                     "actual_model": result.model,
                     "missing": missing,
                     "reason": "；".join([*missing, *([decision.reason] if decision.reason else [])]),
-                    "intent": asdict(result.intent) if result.intent else None,
-                    "action_intent_ok": bool(
-                        not settings.intent_enabled
-                        or (result.intent and result.intent.permits_action(settings.intent_confidence))
-                    ),
                     "audit_response": result.raw_response,
                     "usage": {
                         "input_tokens": result.input_tokens,
@@ -618,10 +613,13 @@ class Service:
             raise Deferred("这条消息已撤回，取消操作。")
         if not -30 <= self.clock() - message["at"] <= settings.advanced.max_action_seconds:
             raise Deferred("消息超出本插件允许的撤回时间，请在QQ中人工处理。")
-        if not manual and (not policy.auto_recall or case["data"].get("missing") or case["human"]):
+        if not manual and (
+            not policy.auto_recall
+            or not case["data"].get("recall_ready")
+            or case["data"].get("missing")
+            or case["human"]
+        ):
             raise Deferred("本条记录不满足自动撤回条件。")
-        if not manual and settings.intent_enabled and not case["data"].get("action_intent_ok"):
-            raise Deferred("发言意图不明确或并非参与违规，不自动撤回。")
         if not manual and message.get("reply") and (message["scope"], message["reply"]) in self.invalidated:
             raise Deferred("引用原文已经撤回，请人工复核当前发言。")
         if case["state"] in ("recalled", "unknown") or case["human"] == "误判":
@@ -901,10 +899,10 @@ class Service:
             self.journal.check()
             if (
                 not rule.warn_member
+                or not case["data"].get("warn_ready")
                 or case["data"].get("missing")
                 or case["human"]
                 or cid in self.cancelled_cases
-                or (latest.intent_enabled and not case["data"].get("action_intent_ok"))
             ):
                 raise Deferred("本条记录不满足群内警告条件。")
             if message["scope"] in self.paused_scopes or case["state"] == "unknown":

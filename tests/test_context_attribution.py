@@ -3,7 +3,6 @@ from dataclasses import replace
 import pytest
 from conftest import A, G, U
 
-from qq_message_guard.client import Intent
 from qq_message_guard.config import Deferred, GuardError, parse_settings
 from qq_message_guard.lexicon import matches
 from qq_message_guard.messages import bounded_context
@@ -125,22 +124,47 @@ def test_context_budget_prefers_quote_without_reordering():
     assert bounded_context(context, 200) == [context[0], context[2]]
 
 
-@pytest.mark.parametrize(
-    "choice,confidence", [("report_or_stop", 0.9), ("normal", 0.9), ("participating", 0.3)]
-)
-async def test_nonparticipation_or_uncertainty_cannot_auto_punish_even_high_scores(env, choice, confidence):
+async def test_high_category_scores_are_not_exempted_by_report_or_quote_wording(env):
     env.configure(auto_recall=True, warn_member=True)
-    env.model.intent = Intent(choice, {}, confidence)
-    await env.speak("引用来举报或边界内容")
+    await env.speak("引用来举报或劝阻")
     case = await env.process()
-    assert case["state"] == "review" and not case["data"]["auto_ready"]
-    assert not case["data"]["recall_ready"] and not case["data"]["warn_ready"]
-    assert case["data"]["intent"]["choice"] == choice
-    with pytest.raises(Deferred):
+    assert case["data"]["recall_ready"] and case["data"]["warn_ready"]
+    assert "intent" not in case["data"] and "intent" not in case["data"]["audit_request"]["questions"]
+    await env.s.recall(case)
+    await env.s.warn(await env.store.call("case", case["id"]))
+    assert [a for a, _ in env.bot.writes] == ["delete_msg", "send_group_msg"]
+
+
+async def test_low_model_score_blocks_direct_automatic_actions_even_with_lexical_hints(env):
+    env.configure(auto_recall=True, warn_member=True)
+    env.model.score = 0.1
+    await env.speak("法轮功")
+    case = await env.process()
+    with pytest.raises(Deferred, match="不满足"):
         await env.s.recall(case)
-    with pytest.raises(Deferred):
+    with pytest.raises(Deferred, match="不满足"):
         await env.s.warn(case)
-    assert not env.bot.writes
+    assert not env.bot.reads and not env.bot.writes
+
+
+async def test_real_reply_content_is_in_current_publication_and_bypasses_normal_screening(env):
+    from qq_message_guard.batching import eligible
+
+    env.model.score = 0.1
+    original, _ = await env.speak("法轮功", user_id="500001")
+    await env.process()
+    _, queued = await env.speak(
+        segments=[
+            {"type": "reply", "data": {"id": original["message_id"]}},
+            {"type": "text", "data": {"text": "请管理员处理一下"}},
+        ]
+    )
+    assert not eligible(queued, env.box.settings)
+    await env.process()
+    state = env.model.requests[-1][0]
+    assert "实际引用内容：法轮功" in state["当前待审核消息"]["内容"]
+    assert state["当前待审核消息"]["引用作者"] != state["当前待审核消息"]["作者"]
+    assert not env.bot.writes  # A lexical hit is still not a punishment decision.
 
 
 async def test_keyword_only_review_not_automatic_punishment(env):
@@ -148,17 +172,16 @@ async def test_keyword_only_review_not_automatic_punishment(env):
     env.model.score = 0.1
     await env.speak("ＢＥＩＪＩＮＧ　ＢＡＯＬＵＡＮ")
     case = await env.process()
-    assert case["state"] == "review" and case["flagged"]
+    assert case["state"] == "allowed" and not case["flagged"]
     assert case["data"]["keyword_matches"] and not case["data"]["auto_ready"]
     assert "词义提示" in env.model.requests[-1][0]
     assert not env.bot.writes
 
 
-async def test_background_hit_is_not_current_hit_and_report_can_dismiss_keyword_only(env):
+async def test_background_or_current_lexical_hints_do_not_override_low_model_scores(env):
     env.model.score = 0.1
     await env.speak("法沦功")
     await env.process()
-    env.model.intent = Intent("report_or_stop", {}, 0.9)
     await env.speak("请别说法沦功，到此为止")
     report = await env.process()
     assert report["state"] == "allowed" and report["data"]["keyword_matches"]

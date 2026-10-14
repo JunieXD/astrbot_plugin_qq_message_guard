@@ -7,7 +7,7 @@ import string
 from dataclasses import asdict, dataclass, field
 from urllib.parse import urlsplit
 
-from .categories import CATEGORIES, DEFAULT_NAMES, QUESTIONS
+from .categories import CATEGORIES, CATEGORY_ALIASES, DEFAULT_NAMES, QUESTIONS
 
 
 class GuardError(Exception):
@@ -28,13 +28,12 @@ class Uncertain(GuardError):
 
 DEFAULT_WARNING = "请遵守群规。你刚才的发言可能违反了本群规定，请停止相关内容；如有异议，请联系管理员复核。"
 DEFAULT_RULES = (
-    "允许正常交流、合理批评、新闻转述、求助、防骗提醒和引用并反对不良行为。"
-    "禁止实施或招揽诈骗、色情资源或服务、人肉隐私及隐私交易、暴力威胁和教唆、"
-    "恶意人身辱骂或群体歧视，以及未经管理员许可的商业推广。"
-    "禁止政治敏感事件及邪教话题的闲聊、影射、调侃，以及粗俗的性器官、性能力、性交易玩笑。"
-    "普通政策、历史、旅游、医学讨论及对违规内容的举报和劝阻不算违规。"
+    "允许普通升学、政策、旅游、医学和健康教育，以及正规服务和合理批评。"
+    "禁止政治敏感事件或邪教组织的提及、影射、谐音和拼音表达，举报、劝阻或引用中出现也不豁免。"
+    "禁止色情资源、露骨性内容及未成年人性化表达、诈骗和违法招揽、泄露他人隐私、"
+    "现实暴力威胁与群体仇恨。按当前内容和实际引用判断，其他人的背景消息仅帮助消歧。"
 )
-QUESTION_VERSION = "qq-message-guard-categories-v4"
+QUESTION_VERSION = "qq-message-guard-content-v5"
 
 
 def fingerprint(value):
@@ -85,6 +84,9 @@ class Check:
     recall_at: float = 0.90
     warn_at: float = 0.90
     notify_at: float = 0.80
+
+    def __post_init__(self):
+        object.__setattr__(self, "name", CATEGORY_ALIASES.get(self.name, self.name))
 
     @property
     def key(self):
@@ -167,8 +169,6 @@ class Settings:
     images_enabled: bool = True
     notify_users: tuple[str, ...] = ()
     advanced: Advanced = field(default_factory=Advanced)
-    intent_enabled: bool = True
-    intent_confidence: float = 0.60
     ocr_enabled: bool = True
     ocr_timeout: int = 15
     # Immutable (label, aliases, meaning) entries, merged with built-ins.
@@ -261,13 +261,16 @@ def parse_settings(raw):
         raise GuardError(f"审核项目应为1～{len(QUESTIONS)}项。")
     parsed = []
     for check in checks:
-        if not isinstance(check, dict) or check.get("name") not in QUESTIONS:
+        if not isinstance(check, dict):
+            raise GuardError("审核项目名称不正确。")
+        name = check.get("name")
+        if not isinstance(name, str) or (name := CATEGORY_ALIASES.get(name, name)) not in QUESTIONS:
             raise GuardError("审核项目名称不正确。")
         review = number(check.get("review_at", 0.55), "复核门槛", 0.01, 1)
         recall = number(check.get("recall_at", 0.90), "自动撤回门槛", review, 1)
         warn = number(check.get("warn_at", 0.90), "群内警告门槛", review, 1)
         notify = number(check.get("notify_at", max(0.80, review)), "管理员通知门槛", review, 1)
-        parsed.append(Check(check["name"], review, recall, warn, notify))
+        parsed.append(Check(name, review, recall, warn, notify))
     if len({c.name for c in parsed}) != len(parsed):
         raise GuardError("审核项目不能重复。")
     more = raw.get("advanced", {})
@@ -377,8 +380,6 @@ def parse_settings(raw):
         images_enabled=switch(raw, "images_enabled", True),
         notify_users=tuple(sorted({qq(x) for x in users})),
         advanced=Advanced(**values),
-        intent_enabled=switch(raw, "intent_enabled", True),
-        intent_confidence=number(raw.get("intent_confidence", 0.60), "自动操作所需意图置信度", 0.5, 1),
         ocr_enabled=switch(raw, "ocr_enabled", True),
         ocr_timeout=integer(raw.get("ocr_timeout", 15), "OCR超时秒数", 3, 60),
         terms=tuple(parsed_terms),

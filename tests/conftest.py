@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from qq_message_guard.client import Intent, Result, compress_image
+from qq_message_guard.client import Result, compress_image
 from qq_message_guard.config import Advanced, Check, Policy, Settings
 from qq_message_guard.ocr import OcrResult
 from qq_message_guard.platform import Platform
@@ -90,9 +90,6 @@ class Model:
     def __init__(self):
         self.score, self.failure, self.hook = 0.97, False, None
         self.requests = []
-        self.intent = Intent(
-            "participating", {"participating": 0.96, "report_or_stop": 0.02, "normal": 0.02}, 0.94
-        )
 
     async def evaluate(self, state, settings, media=()):
         self.requests.append((copy.deepcopy(state), settings, tuple(media)))
@@ -109,16 +106,7 @@ class Model:
             "usage": {"input_tokens": 123, "output_tokens": 1},
             "qev": {"backend": "llama.cpp", "prompt_version": "qev-labels-v2"},
         }
-        if settings.intent_enabled:
-            raw["answers"]["intent"] = {
-                "type": "choice",
-                **{
-                    "choice": self.intent.choice,
-                    "probabilities": self.intent.probabilities,
-                    "confidence": self.intent.confidence,
-                },
-            }
-        return Result("fake-4b", scores, 123, 1, 8.5, raw, self.intent if settings.intent_enabled else None)
+        return Result("fake-4b", scores, 123, 1, 8.5, raw)
 
 
 class Media:

@@ -1,11 +1,11 @@
 name: astrbot_plugin_qq_message_guard
-desc: 使用本地 OneJev 按独立类别批量初筛与逐条细审文字，审核图片，支持观察、管理员复核和自动撤回。
+desc: 本地 OneJev 按内容批量审核 QQ 文字和图片，默认6类，支持复核、通知和撤回。
 help: 添加群并开启插件，先关闭所有操作开关观察结果。机器人管理员私聊 /消息审核 查看帮助。
-version: v0.4.1
+version: v0.5.0
 author: JunieXD
 repo: https://github.com/JunieXD/astrbot_plugin_qq_message_guard
 display_name: QQ 群消息审核
-short_desc: 本地模型分类、明确行为与例外、复核记录与有保护的撤回。
+short_desc: 六类内容审核、谐音与引用识别、复核记录与有保护的撤回。
 support_platforms:
   - aiocqhttp
 astrbot_version: ">=4.26.2,<5"

@@ -28,7 +28,17 @@ def test_sub2api_thirteen_categories_and_chat_defaults():
     assert tuple(c.name for c in Settings().checks) == DEFAULT_NAMES
     assert parse_settings({}).checks == Settings().checks
     assert "群规" not in DEFAULT_NAMES
+    assert len(DEFAULT_NAMES) == 6
+    assert "未成年人色情" not in DEFAULT_NAMES and "色情" in DEFAULT_NAMES
     assert len({c.key for c in CATEGORIES.values()}) == len(CATEGORIES)
+
+
+def test_legacy_category_names_and_intent_config_remain_loadable_without_an_intent_branch():
+    settings = parse_settings(
+        {"checks": [{"name": "违法帮助"}], "intent_enabled": True, "intent_confidence": 0.60}
+    )
+    assert settings.checks[0].name == "诈骗与违法招揽" and settings.checks[0].key == "illicit"
+    assert set(OneJev.request({}, settings)["questions"]) == {"illicit"}
 
 
 async def test_all_categories_use_one_request_and_one_score_each():
@@ -73,7 +83,7 @@ def test_categorical_prefix_does_not_duplicate_definitions_or_inject_composite_r
     body = OneJev.request({"群规": "商业、政治等一切都算违规", "背景": [], "当前待审核消息": {}}, settings)
     assert "群规" not in body["state"]
     assert body["state"]["审核范围"] == list(DEFAULT_NAMES)
-    assert "rules" not in body["questions"] and len(body["questions"]) == len(DEFAULT_NAMES) + 1
+    assert "rules" not in body["questions"] and len(body["questions"]) == len(DEFAULT_NAMES)
     assert all(c.positive not in str(body["state"]) for c in CATEGORIES.values())
 
 
@@ -102,7 +112,7 @@ async def test_all_default_categories_are_persisted_and_keep_action_gates(env):
     await env.speak()
     case = await env.process()
     assert set(case["data"]["scores"]) == {c.key for c in Settings().checks}
-    assert case["data"]["question_version"] == "qq-message-guard-categories-v4"
+    assert case["data"]["question_version"] == "qq-message-guard-content-v5"
     assert case["data"]["actions_pending"] and case["data"]["notification_ready"]
     await env.s.send_alerts()
     assert not env.bot.writes  # Admin delivery continues to wait for actual actions.

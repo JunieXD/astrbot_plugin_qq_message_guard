@@ -9,7 +9,11 @@ from .config import GuardError
 
 BUILTIN_TERMS = (
     ("政治事件表达", ("beijing baoluan", "北京暴乱"), "政治事件相关表达，须按群规和当前语境判断"),
-    ("宗教政治话题", ("法轮功", "法沦功", "fa lun gong"), "特定宗教政治运动及近音写法，举报和劝阻须区别处理"),
+    (
+        "宗教政治话题",
+        ("法轮功", "法沦功", "fa lun gong"),
+        "特定宗教政治运动及近音写法，按当前内容所属类别审核",
+    ),
     ("粗俗性俚语", ("牛子",), "男性生殖器的俗称；医学、求助、举报和制止不等于性玩笑"),
 )
 
@@ -41,7 +45,8 @@ def matches(text, terms=()):
 
 
 def hints(message, context, terms=(), ocr_texts=()):
-    current = matches(message["text"] + "\n" + "\n".join(ocr_texts), terms)
+    quoted = [row["text"] for row in context if row.get("quoted")]
+    current = matches("\n".join([message["text"], *quoted, *ocr_texts]), terms)
     definitions, labels = list(current), {hit["类别"] for hit in current}
     for row in context:
         if row["user"] != message["user"]:

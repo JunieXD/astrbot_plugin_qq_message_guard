@@ -5,17 +5,13 @@ from dataclasses import replace
 
 import pytest
 
-from qq_message_guard.client import Intent
 from qq_message_guard.config import Check, GuardError, parse_settings
 
 
-@pytest.mark.parametrize(
-    "score,confidence", [(0.602390, 0.310700), (0.558802, 0.376666), (0.591914, 0.426455)]
-)
-async def test_ambiguous_scores_are_retained_without_qq_calls(env, score, confidence):
+@pytest.mark.parametrize("score", [0.602390, 0.558802, 0.591914])
+async def test_ambiguous_scores_are_retained_without_qq_calls(env, score):
     env.configure(notify_group=True, admin_group="123456")
     env.model.score = score
-    env.model.intent = Intent("participating", {}, confidence)
     await env.speak("正常话题的讨论")
     case = await env.process()
     await env.s.send_alerts()
@@ -28,31 +24,25 @@ async def test_ambiguous_scores_are_retained_without_qq_calls(env, score, confid
     assert await env.store.call("case", case["id"])
 
 
-@pytest.mark.parametrize(
-    "choice,confidence",
-    [
-        ("participating", 0.59),
-        ("normal", 0.95),
-        ("report_or_stop", 0.95),
-    ],
-)
-async def test_high_score_with_uncertain_or_safe_intent_notifies_without_punishment(env, choice, confidence):
-    env.configure(
-        auto_recall=True, warn_member=True, notify_private=True, notify_group=True, admin_group="123456"
-    )
-    env.box.settings = replace(env.box.settings, notify_users=("300001",))
+async def test_high_scores_with_legacy_safe_intent_metadata_can_be_recalled(env):
+    env.configure(auto_recall=True, warn_member=True, notify_group=True, admin_group="123456")
     env.model.score = 0.99
-    env.model.intent = Intent(choice, {}, confidence)
-    await env.speak()
+    await env.speak("请不要讨论敏感内容")
     case = await env.process()
+    # Old intent fields must have no authority over a new-version category decision.
+    await env.store.call(
+        "patch", case["id"], {"intent": {"choice": "report_or_stop"}, "action_intent_ok": False}
+    )
+    case = await env.store.call("case", case["id"])
+    assert case["data"]["recall_ready"] and case["data"]["warn_ready"]
+    await env.s.recall(case)
+    await env.s.warn(await env.store.call("case", case["id"]))
+    await env.store.call("patch", case["id"], {"actions_pending": False})
     await env.s.send_alerts()
-    assert case["flagged"] and case["data"]["notification_ready"]
-    assert not case["data"]["auto_ready"] and not case["data"]["actions_pending"]
-    assert [action for action, _ in env.bot.writes] == ["send_private_msg", "send_group_msg"]
-    assert not any(action == "get_msg" for action, _ in env.bot.reads)
+    assert [a for a, _ in env.bot.writes] == ["delete_msg", "send_group_msg", "send_group_msg"]
 
 
-async def test_clear_intent_below_notification_threshold_still_does_not_notify(env):
+async def test_score_below_notification_threshold_still_does_not_notify(env):
     env.configure(notify_group=True, admin_group="123456")
     env.model.score = 0.79
     await env.speak()
@@ -62,24 +52,21 @@ async def test_clear_intent_below_notification_threshold_still_does_not_notify(e
     assert not env.bot.writes
 
 
-@pytest.mark.parametrize("score,confidence", [(0.887177, 0.481178), (0.903036, 0.575934)])
-async def test_historical_sensitive_scores_reach_admin_without_uncertain_punishment(env, score, confidence):
+@pytest.mark.parametrize("score,auto", [(0.887177, False), (0.903036, True)])
+async def test_category_scores_control_actions_independently_of_old_intent(env, score, auto):
     env.configure(auto_recall=True, warn_member=True, notify_group=True, admin_group="123456")
     env.box.settings = replace(env.box.settings, checks=(Check("敏感话题"),))
     env.model.score = score
-    env.model.intent = Intent("participating", {}, confidence)
     await env.speak()
     case = await env.process()
-    await env.s.send_alerts()
-    assert case["data"]["notification_ready"] and not case["data"]["auto_ready"]
-    assert [action for action, _ in env.bot.writes] == ["send_group_msg"]
+    assert case["data"]["notification_ready"] and case["data"]["auto_ready"] == auto
+    assert case["data"]["actions_pending"] == auto
 
 
 async def test_sensitive_notification_gate_can_cover_a_lower_contextual_score(env):
     env.configure(auto_recall=True, warn_member=True, notify_group=True, admin_group="123456")
     env.box.settings = replace(env.box.settings, checks=(Check("敏感话题", notify_at=0.75),))
     env.model.score = 0.788718
-    env.model.intent = Intent("participating", {}, 0.574376)
     await env.speak()
     case = await env.process()
     await env.s.send_alerts()
@@ -94,14 +81,13 @@ async def test_keyword_match_alone_never_notifies(env):
     await env.speak("法沦功")
     case = await env.process()
     await env.s.send_alerts()
-    assert case["flagged"] and case["data"]["keyword_matches"]
+    assert not case["flagged"] and case["data"]["keyword_matches"]
     assert not case["data"]["notification_ready"] and not env.bot.writes
 
 
 async def test_notification_threshold_independent_of_punishment(env):
     env.configure(auto_recall=True, warn_member=True, notify_group=True, admin_group="123456")
     env.model.score = 0.8
-    env.model.intent = Intent("participating", {}, 0.6)
     await env.speak()
     case = await env.process()
     await env.s.send_alerts()

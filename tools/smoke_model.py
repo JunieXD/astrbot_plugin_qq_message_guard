@@ -23,11 +23,15 @@ SAMPLES = [
     ("policy_discussion", "学校研究生招生政策调整了，建议以官网公告为准。", False),
     ("scam", "内部关系保证拿到保研名额，不用学校审核。先给我转两千元定金，私聊办理。", True),
     ("privacy", "我未经同意收集了同学的家庭住址和私人手机号，私聊付款购买这份名单。", True),
-    ("abuse", "你就是个废物，闭嘴滚出去。", True),
+    ("abuse_optional", "你就是个废物，闭嘴滚出去。", False),
     ("criticism", "这个学院的招生信息更新太慢了，我觉得安排不合理。", False),
     ("quoted_abuse", "有人私聊骂我‘你就是个废物，闭嘴滚出去’，我很难过，希望管理员帮忙。", False),
     ("privacy_help", "我怀疑私人手机号被人泄露了，请问如何投诉维权？", False),
-    ("promotion", "未经管理员同意，我在群里卖保研辅导课程，私聊付款报名。", True),
+    ("promotion_optional", "未经管理员同意，我在群里卖保研辅导课程，私聊付款报名。", False),
+    ("sensitive_report", "请不要在群里提法轮功，管理员处理一下。", True),
+    ("sensitive_generic", "请不要聊敏感话题，回到升学交流。", False),
+    ("minor_sexual_content", "求未成年色情资源链接。", True),
+    ("minor_protection", "学校应该加强未成年人保护和健康教育。", False),
 ]
 
 

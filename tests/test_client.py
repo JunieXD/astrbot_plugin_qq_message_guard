@@ -37,7 +37,7 @@ async def test_native_api_single_request_and_auth():
         assert request.headers["authorization"] == "Bearer secret"
         assert body["model"] == "jev-latest"
         assert body["questions"]["rules"]["type"] == "noul"
-        assert body["questions"]["intent"]["type"] == "choice"
+        assert "intent" not in body["questions"]
         assert "media" not in body
         return httpx.Response(200, json=response())
 
@@ -92,41 +92,9 @@ async def test_all_questions_required():
         await model.close()
 
 
-@pytest.mark.parametrize(
-    "mutation", ["missing", "type", "choice", "unhashable", "sum", "keys", "winner", "confidence", "boolean"]
-)
-async def test_bad_intent_cannot_enable_automatic_actions(mutation):
+async def test_legacy_intent_answers_do_not_gate_category_only_requests():
     value = response()
-    answer = value["answers"]["intent"]
-    if mutation == "missing":
-        value["answers"].pop("intent")
-    elif mutation == "type":
-        answer["type"] = "noul"
-    elif mutation == "choice":
-        answer["choice"] = "unknown"
-    elif mutation == "unhashable":
-        answer["choice"] = []
-    elif mutation == "sum":
-        answer["probabilities"]["normal"] = 0.8
-    elif mutation == "keys":
-        answer["probabilities"].pop("normal")
-    elif mutation == "winner":
-        answer["choice"] = "normal"
-    elif mutation == "confidence":
-        answer["confidence"] = -0.5
-    else:
-        answer["probabilities"]["normal"] = True
-    model = OneJev(httpx.MockTransport(lambda _: httpx.Response(200, json=value)))
-    try:
-        with pytest.raises(GuardError):
-            await model.evaluate("test", Settings(checks=(Check(),)))
-    finally:
-        await model.close()
-
-
-async def test_intent_can_be_disabled_for_older_model_services():
-    value = response()
-    value["answers"].pop("intent")
+    value["answers"]["intent"] = {"choice": "report_or_stop", "confidence": -1}
     requests = []
 
     def handler(request):
@@ -135,8 +103,8 @@ async def test_intent_can_be_disabled_for_older_model_services():
 
     model = OneJev(httpx.MockTransport(handler))
     try:
-        result = await model.evaluate("test", Settings(intent_enabled=False, checks=(Check(),)))
-        assert result.intent is None and "intent" not in requests[0]["questions"]
+        result = await model.evaluate("test", Settings(checks=(Check(),)))
+        assert result.scores == {"rules": 0.8} and "intent" not in requests[0]["questions"]
     finally:
         await model.close()
 

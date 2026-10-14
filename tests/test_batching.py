@@ -144,7 +144,7 @@ async def test_overlap_is_context_only_and_group_isolation(batch_env):
     assert "背景0" not in str(state["参考前文"]) and "背景11" in str(state["参考前文"])
     assert all(row[0].startswith("C") for row in state["参考前文"])
     body = screen_request(state, env.box.settings)
-    assert all("参考前文只消歧、不计入" in q["instructions"] for q in body["questions"].values())
+    assert all("背景只消歧，不计入当前违规" in q["instructions"] for q in body["questions"].values())
     assert "群规" not in state and "200099" not in str(state)
 
 
@@ -183,7 +183,7 @@ async def test_locate_only_hit_categories_then_original_detail(batch_env):
     assert all(key.endswith("__sensitive_topics") for key in location["questions"])
     assert location["questions"]["M03__sensitive_topics"]["instructions"]["当前目标"][0] == "M03"
     target = await env.store.call("case", cases[2]["id"])
-    assert target["state"] == "review" and len(target["data"]["scores"]) == 10
+    assert target["state"] == "review" and len(target["data"]["scores"]) == 6
     stats = await env.store.call("stats", env.clock())
     assert stats["calls"]["n"] == 3 and stats["stages"] == {"screen": 1, "locate": 1, "detail": 1}
     assert stats["screened_clear"] == 7
@@ -280,7 +280,7 @@ async def test_generic_client_validates_all_location_answers():
             await client.evaluate_request(body, Settings())
         value["answers"]["M01__sensitive_topics"] = {"type": "noul", "noul": 0.2}
         result = await client.evaluate_request(body, Settings())
-        assert result.intent is None and result.scores == {"M01__sensitive_topics": 0.2}
+        assert result.scores == {"M01__sensitive_topics": 0.2}
     finally:
         await client.close()
 

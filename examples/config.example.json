@@ -4,7 +4,7 @@
     {
       "__template_key": "group",
       "group_id": "123456789",
-      "rules": "允许正常交流、合理批评、新闻转述、求助、防骗提醒和引用并反对不良行为。禁止实施或招揽诈骗、色情资源或服务、人肉隐私及隐私交易、暴力威胁和教唆、恶意人身辱骂或群体歧视，以及未经管理员许可的商业推广。禁止政治敏感事件及邪教话题的闲聊、影射、调侃，以及粗俗的性器官、性能力、性交易玩笑。普通政策、历史、旅游、医学讨论及对违规内容的举报和劝阻不算违规。",
+      "rules": "允许普通升学、政策、旅游、医学和健康教育，以及正规服务和合理批评。禁止政治敏感事件或邪教组织的提及、影射、谐音和拼音表达，举报、劝阻或引用中出现也不豁免。禁止色情资源、露骨性内容及未成年人性化表达、诈骗和违法招揽、泄露他人隐私、现实暴力威胁与群体仇恨。按当前内容和实际引用判断，其他人的背景消息仅帮助消歧。",
       "auto_recall": false,
       "warn_member": false,
       "notify_private": false,
@@ -16,7 +16,6 @@
   ],
   "checks": [
     {
-      "__template_key": "check",
       "name": "敏感话题",
       "review_at": 0.55,
       "recall_at": 0.9,
@@ -24,15 +23,6 @@
       "notify_at": 0.8
     },
     {
-      "__template_key": "check",
-      "name": "骚扰辱骂",
-      "review_at": 0.55,
-      "recall_at": 0.9,
-      "warn_at": 0.9,
-      "notify_at": 0.8
-    },
-    {
-      "__template_key": "check",
       "name": "暴力威胁",
       "review_at": 0.55,
       "recall_at": 0.9,
@@ -40,7 +30,6 @@
       "notify_at": 0.8
     },
     {
-      "__template_key": "check",
       "name": "仇恨歧视",
       "review_at": 0.55,
       "recall_at": 0.9,
@@ -48,15 +37,13 @@
       "notify_at": 0.8
     },
     {
-      "__template_key": "check",
-      "name": "违法帮助",
+      "name": "诈骗与违法招揽",
       "review_at": 0.55,
       "recall_at": 0.9,
       "warn_at": 0.9,
       "notify_at": 0.8
     },
     {
-      "__template_key": "check",
       "name": "色情",
       "review_at": 0.55,
       "recall_at": 0.9,
@@ -64,32 +51,7 @@
       "notify_at": 0.8
     },
     {
-      "__template_key": "check",
-      "name": "未成年人色情",
-      "review_at": 0.55,
-      "recall_at": 0.9,
-      "warn_at": 0.9,
-      "notify_at": 0.8
-    },
-    {
-      "__template_key": "check",
       "name": "隐私泄露",
-      "review_at": 0.55,
-      "recall_at": 0.9,
-      "warn_at": 0.9,
-      "notify_at": 0.8
-    },
-    {
-      "__template_key": "check",
-      "name": "商业推广",
-      "review_at": 0.55,
-      "recall_at": 0.9,
-      "warn_at": 0.9,
-      "notify_at": 0.8
-    },
-    {
-      "__template_key": "check",
-      "name": "粗俗性玩笑",
       "review_at": 0.55,
       "recall_at": 0.9,
       "warn_at": 0.9,
@@ -97,7 +59,6 @@
     }
   ],
   "notify_users": [],
-  "intent_enabled": true,
   "ocr_enabled": true,
   "batch": {
     "enabled": true,
