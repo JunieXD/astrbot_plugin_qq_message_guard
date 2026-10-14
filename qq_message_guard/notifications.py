@@ -29,12 +29,13 @@ def notification_text(cases, policy, settings):
         )[:40]
         if not name.strip() or matches(name, settings.terms):
             name = "群成员"
-        topics = [topic_names.get(hit["类别"], hit["类别"]) for hit in data.get("keyword_matches", [])]
-        topics += [
+        topics = [
             names.get(check.key, check.name)
             for check in settings.checks
-            if check.key != "rules" and data.get("scores", {}).get(check.key, 0) >= check.review_at
+            if check.key != "rules" and data.get("scores", {}).get(check.key, 0) >= check.notify_at
         ]
+        if not topics:  # Legacy composite rules have no independent category score.
+            topics = [topic_names.get(hit["类别"], hit["类别"]) for hit in data.get("keyword_matches", [])]
         topics = list(dict.fromkeys(topics))
         suspicion = "、".join(topics[:3]) if topics else "可能违反群规，需要人工判断"
         if case["state"] == "recalled":

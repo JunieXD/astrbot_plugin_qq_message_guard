@@ -25,10 +25,10 @@
             "default": true
           },
           "rules": {
-            "description": "群规",
+            "description": "综合群规（仅旧审核项使用）",
             "type": "text",
             "default": "允许正常交流、合理批评、新闻转述、求助、防骗提醒和引用并反对不良行为。禁止实施或招揽诈骗、色情资源或服务、人肉隐私及隐私交易、暴力威胁和教唆、恶意人身辱骂或群体歧视，以及未经管理员许可的商业推广。禁止政治敏感事件及邪教话题的闲聊、影射、调侃，以及粗俗的性器官、性能力、性交易玩笑。普通政策、历史、旅游、医学讨论及对违规内容的举报和劝阻不算违规。",
-            "hint": "写清禁止的行为和允许的例外。话题分类不等于违规。"
+            "hint": "仅用于兼容的“群规”综合审核项；默认独立分类按各类别明确的行为与例外判断，不用这段泛化群规打总分。"
           },
           "auto_recall": {
             "description": "自动撤回",
@@ -100,14 +100,86 @@
     "default": [
       {
         "__template_key": "check",
-        "name": "群规",
+        "name": "敏感话题",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "骚扰辱骂",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "暴力威胁",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "仇恨歧视",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "违法帮助",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "色情",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "未成年人色情",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "隐私泄露",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "商业推广",
+        "review_at": 0.55,
+        "recall_at": 0.9,
+        "warn_at": 0.9,
+        "notify_at": 0.8
+      },
+      {
+        "__template_key": "check",
+        "name": "粗俗性玩笑",
         "review_at": 0.55,
         "recall_at": 0.9,
         "warn_at": 0.9,
         "notify_at": 0.8
       }
     ],
-    "hint": "默认按本群群规审核。需要时添加敏感话题、粗俗性玩笑等独立项目；增加项目会增加CPU推理时间。",
+    "hint": "默认10项独立类别，一次请求分别评分；支持sub2api的13项分类及QQ群补充项。每项有明确行为与例外。群规为兼容旧配置的综合项，默认不启用。 自伤意图只供管理员复核，不自动撤回或@处罚。",
     "templates": {
       "check": {
         "name": "添加审核项目",
@@ -116,14 +188,28 @@
           "name": {
             "description": "审核项目",
             "type": "string",
-            "default": "群规",
+            "default": "敏感话题",
             "options": [
+              "骚扰辱骂",
+              "暴力威胁",
+              "仇恨歧视",
+              "仇恨暴力",
+              "违法帮助",
+              "暴力违法帮助",
+              "自伤内容",
+              "自伤意图",
+              "自伤方法",
+              "色情",
+              "未成年人色情",
+              "暴力内容",
+              "血腥暴力",
+              "隐私泄露",
+              "商业推广",
+              "敏感话题",
+              "粗俗性玩笑",
               "群规",
               "诈骗与隐私",
-              "色情",
-              "威胁与攻击",
-              "敏感话题",
-              "粗俗性玩笑"
+              "威胁与攻击"
             ]
           },
           "review_at": {
@@ -367,8 +453,8 @@
   "timeout_seconds": {
     "description": "审核请求超时秒数",
     "type": "int",
-    "default": 30,
-    "hint": "5～120秒；超时不能证明服务端停止计算，不立即重试。"
+    "default": 90,
+    "hint": "5～120秒；多类别批量审核默认90秒，等待包含服务排队；超时只留存未完成，不立即重试。"
   },
   "intent_enabled": {
     "description": "区分参与、举报与制止",

@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from dataclasses import asdict
 
+from .categories import CATEGORIES
 from .client import OneJev
 from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncertain
 from .decisions import decide
@@ -742,7 +743,9 @@ class Service:
                 await self.platform.locate(message)
 
         hits = "、".join(
-            c.name for c in settings.checks if case["data"].get("scores", {}).get(c.key, 0) >= c.warn_at
+            c.name
+            for c in settings.checks
+            if CATEGORIES[c.name].punishable and case["data"].get("scores", {}).get(c.key, 0) >= c.warn_at
         )
         text = policy.warning_text.format_map(
             {"群号": message["group"], "QQ号": message["user"], "审核项": hits}

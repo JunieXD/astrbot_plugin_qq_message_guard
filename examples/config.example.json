@@ -17,7 +17,79 @@
   "checks": [
     {
       "__template_key": "check",
-      "name": "群规",
+      "name": "敏感话题",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "骚扰辱骂",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "暴力威胁",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "仇恨歧视",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "违法帮助",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "色情",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "未成年人色情",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "隐私泄露",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "商业推广",
+      "review_at": 0.55,
+      "recall_at": 0.9,
+      "warn_at": 0.9,
+      "notify_at": 0.8
+    },
+    {
+      "__template_key": "check",
+      "name": "粗俗性玩笑",
       "review_at": 0.55,
       "recall_at": 0.9,
       "warn_at": 0.9,

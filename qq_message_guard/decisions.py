@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from .categories import CATEGORIES
+
 
 @dataclass(frozen=True)
 class Decision:
@@ -30,12 +32,13 @@ def decide(result, settings, policy, current_matches):
     if flagged and not action_ok:
         reasons.append("发言意图为举报制止、正常或不明确，仅留存复核，不自动操作或通知")
     notify = action_ok and any(result.scores[c.key] >= c.notify_at for c in settings.checks)
+    punishable = [c for c in settings.checks if CATEGORIES[c.name].punishable]
     if flagged and action_ok and not notify:
         reasons.append("未达到管理员通知门槛，不发送管理员通知")
     return Decision(
         flagged,
-        action_ok and any(result.scores[c.key] >= c.recall_at for c in settings.checks),
-        action_ok and any(result.scores[c.key] >= c.warn_at for c in settings.checks),
+        action_ok and any(result.scores[c.key] >= c.recall_at for c in punishable),
+        action_ok and any(result.scores[c.key] >= c.warn_at for c in punishable),
         notify,
         "；".join(reasons),
     )

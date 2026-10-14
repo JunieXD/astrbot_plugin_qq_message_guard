@@ -43,8 +43,8 @@ async def main(url, output):
             row = {
                 "id": name,
                 "expected_flag": expected,
-                "score": result.scores["rules"],
-                "flagged": result.scores["rules"] >= settings.checks[0].review_at,
+                "scores": result.scores,
+                "flagged": any(result.scores[c.key] >= c.review_at for c in settings.checks),
                 "model": result.model,
                 "elapsed_ms": result.elapsed_ms,
                 "input_tokens": result.input_tokens,
@@ -61,8 +61,8 @@ async def main(url, output):
         row = {
             "id": "image",
             "expected_flag": False,
-            "score": result.scores["rules"],
-            "flagged": result.scores["rules"] >= settings.checks[0].review_at,
+            "scores": result.scores,
+            "flagged": any(result.scores[c.key] >= c.review_at for c in settings.checks),
             "model": result.model,
             "elapsed_ms": result.elapsed_ms,
             "input_tokens": result.input_tokens,

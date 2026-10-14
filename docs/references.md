@@ -10,7 +10,7 @@
 - [`content_moderation.go`](https://github.com/Wei-Shaw/sub2api/blob/4d9ac3e482106d2da3a39fe3e546d8d6801f1cc1/backend/internal/service/content_moderation.go)：独立类别阈值、有界后台队列、耗时和排队统计、审核错误记录。
 - [`prompt_worker.go`](https://github.com/Wei-Shaw/sub2api/blob/4d9ac3e482106d2da3a39fe3e546d8d6801f1cc1/backend/internal/securityaudit/prompt_worker.go)：任务生命周期与停止、运行指标。
 
-区别：接口网关可以在请求发出前阻断，而 QQ bot 只能在消息发出后处理。本插件不照搬 13 项全量请求或网关封禁策略；CPU 后端默认问群规与发言意图。上述 TypeSafe 审核实现当时跳过图片，本插件使用 OneJev 本地的真实视觉输入，明确记录覆盖缺失。
+区别：接口网关可以在请求发出前阻断，而 QQ bot 只能在消息发出后处理。v0.3.0支持13项分类并为QQ聊天独立重写行为与例外，补充隐私、推广、敏感话题及粗俗玩笑；默认10个相关类别与意图共用一次请求。不复制网关封禁策略。上述 TypeSafe 审核实现当时跳过图片，本插件使用 OneJev 本地的真实视觉输入，明确记录覆盖缺失。
 
 ## OneJev
 

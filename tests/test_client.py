@@ -43,7 +43,7 @@ async def test_native_api_single_request_and_auth():
 
     model = OneJev(httpx.MockTransport(handler))
     try:
-        result = await model.evaluate({"消息": "test"}, Settings(api_key="secret"))
+        result = await model.evaluate({"消息": "test"}, Settings(api_key="secret", checks=(Check(),)))
         assert result.scores == {"rules": 0.8} and result.input_tokens == 100
         assert result.raw_response["qev"]["backend"] == "llama.cpp" and len(calls) == 1
     finally:
@@ -57,7 +57,7 @@ async def test_bad_scores_fail_open_without_safe_verdict(bad):
     model = OneJev(httpx.MockTransport(lambda _: httpx.Response(200, content=json.dumps(value))))
     try:
         with pytest.raises(GuardError):
-            await model.evaluate("test", Settings())
+            await model.evaluate("test", Settings(checks=(Check(),)))
     finally:
         await model.close()
 
@@ -78,7 +78,7 @@ async def test_incomplete_response(mutation):
     model = OneJev(httpx.MockTransport(lambda _: httpx.Response(200, json=value)))
     try:
         with pytest.raises(GuardError):
-            await model.evaluate("test", Settings())
+            await model.evaluate("test", Settings(checks=(Check(),)))
     finally:
         await model.close()
 
@@ -119,7 +119,7 @@ async def test_bad_intent_cannot_enable_automatic_actions(mutation):
     model = OneJev(httpx.MockTransport(lambda _: httpx.Response(200, json=value)))
     try:
         with pytest.raises(GuardError):
-            await model.evaluate("test", Settings())
+            await model.evaluate("test", Settings(checks=(Check(),)))
     finally:
         await model.close()
 
@@ -135,7 +135,7 @@ async def test_intent_can_be_disabled_for_older_model_services():
 
     model = OneJev(httpx.MockTransport(handler))
     try:
-        result = await model.evaluate("test", Settings(intent_enabled=False))
+        result = await model.evaluate("test", Settings(intent_enabled=False, checks=(Check(),)))
         assert result.intent is None and "intent" not in requests[0]["questions"]
     finally:
         await model.close()
@@ -152,7 +152,7 @@ async def test_http_failure_not_retried(status):
     model = OneJev(httpx.MockTransport(handler))
     try:
         with pytest.raises(GuardError) as error:
-            await model.evaluate("test", Settings())
+            await model.evaluate("test", Settings(checks=(Check(),)))
         assert "secret" not in str(error.value) and count == [1]
     finally:
         await model.close()
