@@ -40,7 +40,10 @@ async def test_archive_is_saved_before_recall_and_review_works_after_message_dis
     async def before(action):
         if action == "delete_msg":
             source = env.path / f"evidence/{case['id']}-source.json"
-            assert json.loads(source.read_text())["message"]["text"] == raw["message"][0]["data"]["text"]
+            assert (
+                json.loads(source.read_text(encoding="utf-8"))["message"]["text"]
+                == raw["message"][0]["data"]["text"]
+            )
             assert (env.path / f"evidence/{case['id']}-local.html").exists()
             # The attachment and text evidence don't depend on a post-recall QQ query.
 
@@ -127,9 +130,9 @@ async def test_long_publication_is_archived_beyond_model_budget_and_images_are_b
         with Image.open(preview) as decorated, Image.open(clear) as plain:
             assert decorated.height <= HEIGHT
             assert ImageChops.difference(decorated, plain).getbbox()
-    source = json.loads((env.path / f"evidence/{case['id']}-source.json").read_text())
+    source = json.loads((env.path / f"evidence/{case['id']}-source.json").read_text(encoding="utf-8"))
     assert source["message"]["text"].endswith("ORIGINAL END")
-    assert "ORIGINAL END" in (env.path / f"evidence/{case['id']}-local.html").read_text()
+    assert "ORIGINAL END" in (env.path / f"evidence/{case['id']}-local.html").read_text(encoding="utf-8")
     shorter = copy.deepcopy(case)
     shorter["data"]["original_text"] = {"text": "short", "truncated": False}
     await env.s.evidence.render(shorter, replace(picture_config, line_width=0))
