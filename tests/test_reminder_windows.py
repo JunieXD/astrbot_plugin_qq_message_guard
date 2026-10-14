@@ -66,7 +66,7 @@ async def test_pending_actions_wait_then_notify_final_recall_state(env):
     current = await wait_actions(env, case["id"])
     assert current["state"] == "recalled" and current["data"]["warned"]
     await env.s.send_alerts()
-    assert "原消息已撤回" in str(env.bot.writes[-1])
+    assert "已撤回" in str(env.bot.writes[-1])
 
 
 async def test_slow_recall_still_leaves_gap_before_warning_without_extra_action_delay(env):
@@ -132,7 +132,7 @@ async def test_external_recall_cancels_queued_actions_without_stranding_notice(e
     )
     assert await env.store.call("next_recall") is None
     await env.s.send_alerts()
-    assert len(env.bot.writes) == 1 and "原消息已撤回" in str(env.bot.writes[0])
+    assert len(env.bot.writes) == 1 and "已撤回" in str(env.bot.writes[0])
     assert (await env.store.call("case", case["id"]))["notified"]
 
 
@@ -185,12 +185,12 @@ async def test_batch_deduplicates_members_without_dropping_ninth_member(env):
         await env.speak(user_id=user)
         ids.append((await env.process())["id"])
     await env.s.send_alerts()
-    text = str(env.bot.writes[0])
-    assert text.count("QQ " + U) == 1 and text.count("发言时间：") == 8
+    text = env.bot.writes[0][1]["message"][0]["data"]["text"]
+    assert text.count("（" + U + "）") == 1 and len(text.splitlines()) == 33
     assert not (await env.store.call("case", ids[-1]))["notified"]
     env.clock.now += 61
     await env.s.send_alerts()
-    assert len(env.bot.writes) == 2 and "QQ 200009" in str(env.bot.writes[-1])
+    assert len(env.bot.writes) == 2 and "（200009）" in str(env.bot.writes[-1])
     for cid in ids:
         assert (await env.store.call("case", cid))["notified"]
 

@@ -35,11 +35,11 @@ async def test_normal_messages_never_notify_but_detected_risk_does(env):
     assert len(env.bot.writes) == 1
     text = env.bot.writes[0][1]["message"][0]["data"]["text"]
     assert "鼠群" in text and "测试群名片" in text and "敏感话题" in text
-    assert text.startswith("🛡️ 发言审核提醒\n来源群：鼠群（100002）\n测试群名片（QQ 200001）\n")
-    assert len(text.splitlines()) == 7 and "查看" not in text
-    assert "置信度：群规 95.0%（模型评分）" in text
+    assert text.startswith("🛡️ 鼠群 · 审核提醒\n\n测试群名片（200001）\n")
+    assert len(text.splitlines()) == 5 and "查看" not in text
+    assert "敏感话题 · 95.0% · 未撤回" in text
     assert "未完整审核" not in text and "tokens" not in text and "法沦功" not in text
-    assert re.search(r"发言时间：\d+月\d+日 \d{2}:\d{2}:\d{2}", text)
+    assert re.search(r"\d+月\d+日 \d{2}:\d{2}:\d{2}", text)
 
 
 async def test_detected_risk_in_partial_audit_can_notify(env):
@@ -75,7 +75,7 @@ async def test_pending_legacy_failure_batch_cannot_leak_runtime_errors(env):
     )
     await env.s.send_alerts()
     text = env.bot.writes[0][1]["message"][0]["data"]["text"]
-    assert text.count("发言时间：") == 1 and "图片下载" not in text
+    assert len(re.findall(r"\d+月\d+日 \d{2}:\d{2}:\d{2}", text)) == 1 and "图片下载" not in text
 
 
 async def test_offline_replay_is_recorded_but_never_audited_or_notified(env):
@@ -98,7 +98,7 @@ async def test_notification_has_only_readable_evidence_and_limited_length(env):
     await env.speak("可疑发言")
     case = await env.process()
     text = notification_text([case] * 100, env.box.settings.groups[0], env.box.settings)
-    assert len(text) < 3800 and text.count("发言时间：") == 8
+    assert len(text) < 3800 and len(re.findall(r"\d+月\d+日 \d{2}:\d{2}:\d{2}", text)) == 8
 
 
 async def test_notification_scores_only_show_categories_that_met_their_own_gate(env):
@@ -112,6 +112,5 @@ async def test_notification_scores_only_show_categories_that_met_their_own_gate(
     case = await env.process()
     case["data"]["scores"] = {"sensitive_topics": 0.887177, "advertising": 0.85, "sexual": 0.91}
     text = notification_text([case], env.box.settings.groups[0], env.box.settings)
-    assert "疑点：色情、敏感话题" in text
-    assert "置信度：色情 91.0%、敏感话题 88.7%（模型评分）" in text
+    assert "色情 · 91.0%、敏感话题 · 88.7% · 未撤回" in text
     assert "商业推广" not in text and "85.0%" not in text

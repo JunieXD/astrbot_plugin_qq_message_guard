@@ -20,7 +20,7 @@ def is_notifiable(case):
 def notification_text(cases, policy, settings):
     names = {v[0]: k for k, v in QUESTIONS.items()}
     topic_names = {"政治事件表达": "敏感话题", "宗教政治话题": "敏感话题", "粗俗性俚语": "粗俗性玩笑"}
-    title = f"{policy.display_name}（{policy.group_id}）" if policy.display_name else policy.group_id
+    title = policy.display_name or policy.group_id
     parts = []
     for case in cases[:8]:
         data, message = case["data"], case["data"]["message"]
@@ -38,24 +38,29 @@ def notification_text(cases, policy, settings):
             key=lambda hit: hit[1],
             reverse=True,
         )
-        topics = [name for name, _ in hits if name != "群规"]
-        if not topics:  # Legacy composite rules have no independent category score.
-            topics = [topic_names.get(hit["类别"], hit["类别"]) for hit in data.get("keyword_matches", [])]
-        topics = list(dict.fromkeys(topics))
-        suspicion = "、".join(topics[:3]) if topics else "可能违反群规，需要人工判断"
-        confidence = "、".join(f"{name} {score:.1%}" for name, score in hits[:3])
+        # Old composite rules can only provide a topic hint and an overall score.
+        legacy_topics = list(
+            dict.fromkeys(
+                topic_names.get(hit["类别"], hit["类别"]) for hit in data.get("keyword_matches", [])
+            )
+        )
+        legacy_label = "/".join(legacy_topics[:3]) or "群规"
+        evidence = (
+            "、".join(
+                f"{legacy_label if category == '群规' else category} · {score:.1%}"
+                for category, score in hits[:3]
+            )
+            or "可能违反群规"
+        )
         if case["state"] == "recalled":
-            handled = "原消息已撤回"
+            handled = "已撤回"
         elif case["state"] in ("unknown", "failed"):
-            handled = "处理结果需要人工核对"
+            handled = "处理结果待核对"
         elif data.get("warned"):
-            handled = "已提醒成员，仍需人工复核"
+            handled = "未撤回（已提醒）"
         else:
-            handled = "当前未自动处理，请人工复核"
+            handled = "未撤回"
         local = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8)))
         stamp = f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}:{local.second:02d}"
-        parts.append(
-            f"{name}（QQ {message['user']}）\n发言时间：{stamp}\n疑点：{suspicion}"
-            f"\n置信度：{confidence or '暂无'}（模型评分）\n处理：{handled}"
-        )
-    return f"🛡️ 发言审核提醒\n来源群：{title}\n" + "\n\n".join(parts)
+        parts.append(f"{name}（{message['user']}）\n{stamp}\n{evidence} · {handled}")
+    return f"🛡️ {title} · 审核提醒\n\n" + "\n\n".join(parts)

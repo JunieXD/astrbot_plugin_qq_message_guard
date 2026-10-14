@@ -72,7 +72,7 @@ async def test_sensitive_notification_gate_can_cover_a_lower_contextual_score(en
     await env.s.send_alerts()
     assert case["data"]["notification_ready"] and not case["data"]["auto_ready"]
     assert [action for action, _ in env.bot.writes] == ["send_group_msg"]
-    assert "敏感话题 78.9%" in str(env.bot.writes[0])
+    assert "敏感话题 · 78.9%" in str(env.bot.writes[0])
 
 
 async def test_keyword_match_alone_never_notifies(env):
@@ -158,9 +158,9 @@ async def test_legacy_frozen_batch_does_not_bypass_new_notification_gate(env):
         },
     )
     await env.s.send_alerts()
-    text = str(env.bot.writes[0])
-    assert text.count("发言时间：") == 1 and "QQ 200002" in text
-    assert "QQ 200001" not in text
+    text = env.bot.writes[0][1]["message"][0]["data"]["text"]
+    assert len(text.splitlines()) == 5 and "（200002）" in text
+    assert "（200001）" not in text
 
 
 def test_existing_configs_receive_separate_notification_default():

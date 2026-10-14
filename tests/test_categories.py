@@ -102,7 +102,7 @@ async def test_only_actual_notification_categories_are_displayed(env):
     case = await env.process()
     await env.s.send_alerts()
     text = str(env.bot.writes[0])
-    assert "疑点：商业推广" in text and "敏感话题" not in text and "色情" not in text
+    assert "商业推广 · 98.0%" in text and "敏感话题" not in text and "色情" not in text
     assert case["data"]["scores"]["sexual"] == 0.6  # Retained for local review.
     assert "群规" not in case["data"]["audit_request"]["state"]
 
