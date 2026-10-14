@@ -183,7 +183,7 @@ async def test_locate_only_hit_categories_then_original_detail(batch_env):
     assert all(key.endswith("__sensitive_topics") for key in location["questions"])
     assert location["questions"]["M03__sensitive_topics"]["instructions"]["当前目标"][0] == "M03"
     target = await env.store.call("case", cases[2]["id"])
-    assert target["state"] == "review" and len(target["data"]["scores"]) == 6
+    assert target["state"] == "review" and len(target["data"]["scores"]) == 5
     stats = await env.store.call("stats", env.clock())
     assert stats["calls"]["n"] == 3 and stats["stages"] == {"screen": 1, "locate": 1, "detail": 1}
     assert stats["screened_clear"] == 7

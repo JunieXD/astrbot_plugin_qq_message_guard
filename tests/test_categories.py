@@ -28,7 +28,8 @@ def test_sub2api_thirteen_categories_and_chat_defaults():
     assert tuple(c.name for c in Settings().checks) == DEFAULT_NAMES
     assert parse_settings({}).checks == Settings().checks
     assert "群规" not in DEFAULT_NAMES
-    assert len(DEFAULT_NAMES) == 6
+    assert len(DEFAULT_NAMES) == 5
+    assert "隐私泄露" not in DEFAULT_NAMES
     assert "未成年人色情" not in DEFAULT_NAMES and "色情" in DEFAULT_NAMES
     assert len({c.key for c in CATEGORIES.values()}) == len(CATEGORIES)
 

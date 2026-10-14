@@ -144,7 +144,6 @@ DEFAULT_NAMES = (
     "仇恨歧视",
     "诈骗与违法招揽",
     "色情",
-    "隐私泄露",
 )
 
 # Shared by detail, screening and localization; category definitions decide
