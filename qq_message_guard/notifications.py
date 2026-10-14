@@ -7,10 +7,11 @@ from .config import QUESTIONS
 from .lexicon import matches
 
 
-def is_reviewable(case):
+def is_notifiable(case):
     return bool(
         case["flagged"]
         and case["data"].get("scores")
+        and case["data"].get("notification_ready")
         and not case["human"]
         and not case["data"].get("actions_pending")
     )

@@ -8,6 +8,7 @@ class Decision:
     flagged: bool
     recall: bool
     warn: bool
+    notify: bool
     reason: str
 
 
@@ -27,10 +28,14 @@ def decide(result, settings, policy, current_matches):
     if keyword_hit:
         reasons.append("当前消息命中词义词库，仅提示复核，不直接处罚")
     if flagged and not action_ok:
-        reasons.append("发言意图为举报制止、正常或不明确，不自动撤回或警告")
+        reasons.append("发言意图为举报制止、正常或不明确，仅留存复核，不自动操作或通知")
+    notify = action_ok and any(result.scores[c.key] >= c.notify_at for c in settings.checks)
+    if flagged and action_ok and not notify:
+        reasons.append("未达到管理员通知门槛，不发送管理员通知")
     return Decision(
         flagged,
         action_ok and any(result.scores[c.key] >= c.recall_at for c in settings.checks),
         action_ok and any(result.scores[c.key] >= c.warn_at for c in settings.checks),
+        notify,
         "；".join(reasons),
     )

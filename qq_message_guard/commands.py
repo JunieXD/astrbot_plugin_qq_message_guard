@@ -65,8 +65,9 @@ class Commands:
                 )
                 or "未配置"
             )
+            notice_thresholds = "、".join(f"{check.name} {check.notify_at:.2f}" for check in settings.checks)
             return (
-                f"群消息审核 v0.2.2\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.2.3\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
@@ -83,6 +84,7 @@ class Commands:
                 f"提醒额度：{settings.advanced.writes_per_hour}/小时。\n"
                 f"同成员提醒冷却：@{settings.advanced.warn_cooldown_minutes}分钟，"
                 f"管理员通知{settings.advanced.notify_cooldown_minutes}分钟。\n"
+                f"管理员通知门槛：{notice_thresholds}；参与意图检查{'开' if settings.intent_enabled else '关'}。\n"
                 f"暂停：{'；'.join(stats['pauses'].values()) or '无'}\n"
                 f"模型故障冷却：{max(0, int(self.s.model_cooldown - self.s.clock()))}秒。\n"
                 f"操作节奏：{'接入共享队列' if self.s.platform.shared_guard() else '仅本插件'}。"

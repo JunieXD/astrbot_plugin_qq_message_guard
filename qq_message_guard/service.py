@@ -13,7 +13,7 @@ from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncer
 from .decisions import decide
 from .lexicon import hints, matches, screen_output
 from .messages import Message, bounded_context, message_id, model_state
-from .notifications import is_reviewable, notification_text
+from .notifications import is_notifiable, notification_text
 from .ocr import Ocr
 from .platform import ApiFailure
 
@@ -353,6 +353,7 @@ class Service:
                 state,
                 {
                     "scores": result.scores,
+                    "notification_ready": decision.notify,
                     "actual_model": result.model,
                     "missing": missing,
                     "reason": "；".join([*missing, *([decision.reason] if decision.reason else [])]),
@@ -566,7 +567,7 @@ class Service:
                 and policy.enabled
                 and (policy.notify_private or policy.notify_group)
                 and case["data"]["settings_revision"] == settings.revision
-                and is_reviewable(case)
+                and is_notifiable(case)
             ):
                 scopes[case["scope"]].append(case)
         for scope, cases in scopes.items():
@@ -588,7 +589,7 @@ class Service:
                     "anchor": cases[0]["id"],
                 }
                 await self.store.call("put", batch_key, batch)
-            cases = [c for c in await self.store.call("batch_cases", batch["ids"]) if is_reviewable(c)]
+            cases = [c for c in await self.store.call("batch_cases", batch["ids"]) if is_notifiable(c)]
             if not cases:
                 await self.store.call("notified", batch["ids"])
                 await self.store.call("put", batch_key, None)

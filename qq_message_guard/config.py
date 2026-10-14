@@ -114,6 +114,7 @@ class Check:
     review_at: float = 0.55
     recall_at: float = 0.90
     warn_at: float = 0.90
+    notify_at: float = 0.80
 
     @property
     def key(self):
@@ -263,7 +264,8 @@ def parse_settings(raw):
         review = number(check.get("review_at", 0.55), "复核门槛", 0.01, 1)
         recall = number(check.get("recall_at", 0.90), "自动撤回门槛", review, 1)
         warn = number(check.get("warn_at", 0.90), "群内警告门槛", review, 1)
-        parsed.append(Check(check["name"], review, recall, warn))
+        notify = number(check.get("notify_at", max(0.80, review)), "管理员通知门槛", review, 1)
+        parsed.append(Check(check["name"], review, recall, warn, notify))
     if len({c.name for c in parsed}) != len(parsed):
         raise GuardError("审核项目不能重复。")
     more = raw.get("advanced", {})

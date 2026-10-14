@@ -20,7 +20,8 @@
       "name": "群规",
       "review_at": 0.55,
       "recall_at": 0.9,
-      "warn_at": 0.9
+      "warn_at": 0.9,
+      "notify_at": 0.8
     }
   ],
   "notify_users": [],
