@@ -146,6 +146,16 @@ class Advanced:
 
 
 @dataclass(frozen=True)
+class Batch:
+    enabled: bool = True
+    max_messages: int = 8
+    wait_seconds: int = 20
+    overlap_messages: int = 10
+    threshold: float = 0.30
+    spot_check_percent: int = 10
+
+
+@dataclass(frozen=True)
 class Settings:
     enabled: bool = False
     groups: tuple[Policy, ...] = ()
@@ -163,9 +173,14 @@ class Settings:
     ocr_timeout: int = 15
     # Immutable (label, aliases, meaning) entries, merged with built-ins.
     terms: tuple[tuple[str, tuple[str, ...], str], ...] = ()
+    batch: Batch = field(default_factory=Batch)
 
     def group(self, gid):
         return next((p for p in self.groups if p.group_id == gid), None)
+
+    @property
+    def screen_threshold(self):
+        return min(self.batch.threshold, *(check.review_at for check in self.checks))
 
     @property
     def revision(self):
@@ -181,6 +196,17 @@ class Settings:
 def parse_settings(raw):
     if not isinstance(raw, dict):
         raise GuardError("插件配置应为对象。")
+    batch = raw.get("batch", {})
+    if not isinstance(batch, dict):
+        raise GuardError("批量初筛配置应为对象。")
+    batching = Batch(
+        enabled=switch(batch, "enabled", True),
+        max_messages=integer(batch.get("max_messages", 8), "每批最多新消息", 2, 20),
+        wait_seconds=integer(batch.get("wait_seconds", 20), "初筛最长等待秒数", 1, 30),
+        overlap_messages=integer(batch.get("overlap_messages", 10), "初筛重叠背景条数", 0, 24),
+        threshold=number(batch.get("threshold", 0.30), "初筛继续审核门槛", 0.01, 0.5),
+        spot_check_percent=integer(batch.get("spot_check_percent", 10), "初筛抽查百分比", 0, 100),
+    )
     groups = raw.get("groups", [])
     if not isinstance(groups, list) or len(groups) > 50:
         raise GuardError("最多配置50个群。")
@@ -356,4 +382,5 @@ def parse_settings(raw):
         ocr_enabled=switch(raw, "ocr_enabled", True),
         ocr_timeout=integer(raw.get("ocr_timeout", 15), "OCR超时秒数", 3, 60),
         terms=tuple(parsed_terms),
+        batch=batching,
     )

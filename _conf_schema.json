@@ -240,6 +240,49 @@
       }
     }
   },
+  "batch": {
+    "description": "批量初筛（减少普通聊天审核调用）",
+    "type": "object",
+    "hint": "只初筛完整文字；图片、词库候选等直接细审。初筛不会触发处罚。",
+    "items": {
+      "enabled": {
+        "description": "启用批量初筛",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭恢复原来的逐条审核。默认仅对普通完整文字初筛。"
+      },
+      "max_messages": {
+        "description": "每批最多几条新消息",
+        "type": "int",
+        "default": 8,
+        "hint": "2～20条，默认8；满批即处理，不必等定时结束。"
+      },
+      "wait_seconds": {
+        "description": "最多等待几秒",
+        "type": "int",
+        "default": 20,
+        "hint": "1～30秒，从第一条排队开始计时；到期不足一批也处理。只有一条时直接细审。"
+      },
+      "overlap_messages": {
+        "description": "附带几条重叠背景",
+        "type": "int",
+        "default": 10,
+        "hint": "0～24条，只供理解前文，不重复算成新违规；仍补充必要的同作者前文和引用。"
+      },
+      "threshold": {
+        "description": "继续细审的初筛门槛",
+        "type": "float",
+        "default": 0.3,
+        "hint": "0.01～0.50；初筛与候选定位使用此门槛，推荐保持较低。与通知、撤回门槛无关，尚非经过全面校准的概率。 复核门槛更低时自动取较低值。"
+      },
+      "spot_check_percent": {
+        "description": "未命中消息抽查比例（%）",
+        "type": "int",
+        "default": 10,
+        "hint": "0～100，默认10%；抽中的消息仍按原来的完整规则细审，用于观察初筛漏检，会增加调用。"
+      }
+    }
+  },
   "base_url": {
     "description": "本地OneJev服务地址",
     "type": "string",

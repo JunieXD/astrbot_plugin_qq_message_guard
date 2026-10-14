@@ -54,8 +54,19 @@ class Store:
                 UNIQUE(scope,mid));
             CREATE INDEX IF NOT EXISTS history_scope ON history(scope,id);
             CREATE INDEX IF NOT EXISTS history_sender ON history(scope,user,id);
-            PRAGMA user_version=2;
+            CREATE TABLE IF NOT EXISTS screenings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL,
+                created REAL NOT NULL, updated REAL NOT NULL, state TEXT NOT NULL,
+                stage TEXT NOT NULL, flagged INTEGER NOT NULL DEFAULT 0,
+                case_ids TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS screening_retention ON screenings(updated);
         """)
+        columns = {row["name"] for row in await self._rows("PRAGMA table_info(calls)")}
+        if "stage" not in columns:
+            await self.db.execute("ALTER TABLE calls ADD COLUMN stage TEXT NOT NULL DEFAULT 'detail'")
+        if "screening_id" not in columns:
+            await self.db.execute("ALTER TABLE calls ADD COLUMN screening_id INTEGER")
+        await self.db.execute("PRAGMA user_version=3")
         await self.call("recover", time.time())
 
     async def close(self):
@@ -130,6 +141,9 @@ class Store:
         )
 
     async def recover(self, now):
+        await self.db.execute(
+            "UPDATE screenings SET state='incomplete',updated=? WHERE state='running'", (now,)
+        )
         for row in await self._rows("SELECT id FROM cases WHERE state IN ('queued','auditing')"):
             await self.finish(row["id"], "incomplete", {"reason": "插件重载中断，未完成审核"}, now)
         for row in await self._rows("SELECT * FROM operations WHERE state='submitted'"):
@@ -195,6 +209,69 @@ class Store:
         row = min(rows, key=lambda r: (served.get(r["scope"], 0), r["created"], r["id"]))
         await self.db.execute("UPDATE cases SET state='auditing' WHERE id=?", (row["id"],))
         return await self.case(row["id"])
+
+    async def next_work(self, served, settings, now):
+        from .batching import choose_work
+
+        rows = await self._rows("SELECT * FROM cases WHERE state='queued' ORDER BY created,id LIMIT 1000")
+        cases, wait = choose_work([self._case(row) for row in rows], served, settings, now)
+        await self.db.executemany("UPDATE cases SET state='auditing' WHERE id=?", [(c["id"],) for c in cases])
+        return [await self.case(c["id"]) for c in cases], wait
+
+    async def queue_stage(self, cid, batch, now):
+        current = await self.case(cid)
+        if current is None or current["state"] != "auditing" or current["human"]:
+            return
+        await self.patch(cid, {"batch": batch, "work_queued_at": now})
+        await self.db.execute("UPDATE cases SET state='queued',updated=? WHERE id=?", (now, cid))
+
+    async def begin_screening(self, cases, stage, request, now):
+        cursor = await self.db.execute(
+            "INSERT INTO screenings(scope,created,updated,state,stage,case_ids,data)"
+            " VALUES(?,?,?,'running',?,?,?)",
+            (
+                cases[0]["scope"],
+                now,
+                now,
+                stage,
+                json.dumps([c["id"] for c in cases]),
+                json.dumps({"request": request}, ensure_ascii=False),
+            ),
+        )
+        sid = cursor.lastrowid
+        for index, case in enumerate(cases):
+            batch = dict(case["data"].get("batch", {}))
+            batch["screening_ids"] = [*batch.get("screening_ids", []), sid]
+            if stage == "screen":
+                batch["label"] = request["state"]["待初筛消息"][index][0]
+            await self.patch(case["id"], {"batch": batch})
+        return sid
+
+    async def finish_screening(self, sid, now, result=None, error="", flagged=False):
+        row = await self._row("SELECT data FROM screenings WHERE id=?", (sid,))
+        data = json.loads(row[0])
+        data.update(response=result.raw_response if result else None, error=error)
+        await self.db.execute(
+            "UPDATE screenings SET state=?,updated=?,flagged=?,data=? WHERE id=?",
+            (
+                "completed" if result else "incomplete",
+                now,
+                int(flagged),
+                json.dumps(data, ensure_ascii=False),
+                sid,
+            ),
+        )
+
+    async def screening(self, sid):
+        row = await self._row("SELECT * FROM screenings WHERE id=?", (sid,))
+        return (
+            {**dict(row), "data": json.loads(row["data"]), "case_ids": json.loads(row["case_ids"])}
+            if row
+            else None
+        )
+
+    async def flag_screenings(self, ids):
+        await self.db.executemany("UPDATE screenings SET flagged=1 WHERE id=?", [(sid,) for sid in ids])
 
     @staticmethod
     def _clean_media_refs(data):
@@ -302,15 +379,22 @@ class Store:
         if not case:
             raise GuardError("审核记录不存在或已过期。")
         data = {**case["data"], "human_actor": actor, "human_at": now}
+        if human == "违规":
+            await self.db.executemany(
+                "UPDATE screenings SET flagged=1,updated=? WHERE id=?",
+                [(now, sid) for sid in data.get("batch", {}).get("screening_ids", [])],
+            )
         await self.db.execute(
             "UPDATE cases SET human=?,updated=?,data=?,action_ready=0 WHERE id=?",
             (human, now, json.dumps(data, ensure_ascii=False), cid),
         )
 
-    async def record_call(self, cid, now, result=None, elapsed=0, error=""):
+    async def record_call(
+        self, cid, now, result=None, elapsed=0, error="", stage="detail", screening_id=None
+    ):
         await self.db.execute(
-            "INSERT INTO calls(case_id,at,ok,model,input_tokens,output_tokens,elapsed_ms,error)"
-            " VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO calls(case_id,at,ok,model,input_tokens,output_tokens,elapsed_ms,error,stage,screening_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
                 cid,
                 now,
@@ -320,6 +404,8 @@ class Store:
                 result.output_tokens if result else 0,
                 result.elapsed_ms if result else elapsed,
                 error[:500],
+                stage,
+                screening_id,
             ),
         )
 
@@ -454,12 +540,32 @@ class Store:
         pauses = await self._rows(
             "SELECT key,value FROM state WHERE key LIKE 'pause:%' OR key LIKE 'group-pause:%'"
         )
-        queue = await self._row("SELECT count(*) n,min(created) oldest FROM cases WHERE state='queued'")
+        queue = await self._row(
+            "SELECT count(*) n,min(COALESCE(json_extract(data,'$.work_queued_at'),created)) oldest FROM cases WHERE state='queued'"
+        )
         return {
             "states": states,
             "calls": dict(counts),
             "queue": {"n": queue["n"], "oldest_seconds": max(0, now - (queue["oldest"] or now))},
             "pauses": {r["key"]: json.loads(r["value"]) for r in pauses if json.loads(r["value"])},
+            "stages": {
+                r["stage"]: r["n"]
+                for r in await self._rows(
+                    "SELECT stage,count(*) n FROM calls WHERE at>? GROUP BY stage", (now - 86400,)
+                )
+            },
+            "screened_clear": (
+                await self._row(
+                    "SELECT count(*) n FROM cases WHERE created>? AND json_extract(data,'$.audit_path')='batch_clear'",
+                    (now - 86400,),
+                )
+            )["n"],
+            "spot_checks": (
+                await self._row(
+                    "SELECT count(*) n FROM cases WHERE created>? AND json_extract(data,'$.batch.spot_check')=1",
+                    (now - 86400,),
+                )
+            )["n"],
         }
 
     async def maintain(self, now, days, harmful_days):
@@ -481,8 +587,14 @@ class Store:
                 "INSERT OR IGNORE INTO garbage VALUES(?)",
                 [(m["file"],) for m in data.get("media_records", []) if m.get("file")],
             )
-            await self.db.execute("DELETE FROM calls WHERE case_id=?", (row["id"],))
+            await self.db.execute("DELETE FROM calls WHERE case_id=? AND screening_id IS NULL", (row["id"],))
             await self.db.execute("DELETE FROM cases WHERE id=?", (row["id"],))
+        expired = await self._rows(
+            "SELECT id FROM screenings WHERE state!='running' AND updated<? AND (flagged=0 OR updated<?)",
+            (now - days * 86400, now - harmful_days * 86400),
+        )
+        await self.db.executemany("DELETE FROM calls WHERE screening_id=?", [(r["id"],) for r in expired])
+        await self.db.executemany("DELETE FROM screenings WHERE id=?", [(r["id"],) for r in expired])
         await self.db.execute(
             "DELETE FROM operations WHERE at<? AND state NOT IN ('submitted','unknown')",
             (now - harmful_days * 86400,),

@@ -93,7 +93,10 @@ class OneJev:
         return body
 
     async def evaluate(self, state, settings, media=()):
-        body = self.request(state, settings, media)
+        return await self.evaluate_request(self.request(state, settings, media), settings)
+
+    async def evaluate_request(self, body, settings):
+        """All stages share one transport and strict validation of requested answers."""
         headers = {"Authorization": "Bearer " + settings.api_key} if settings.api_key else {}
         started = time.monotonic()
         async with self.lock:
@@ -120,8 +123,9 @@ class OneJev:
         if not isinstance(value, dict) or not isinstance(value.get("answers"), dict):
             raise GuardError("OneJev响应缺少answers，本次未完成审核。")
         scores = {}
-        for check in settings.checks:
-            key = check.key
+        for key, question in body["questions"].items():
+            if question["type"] != "noul":
+                continue
             answer = value["answers"].get(key)
             if not isinstance(answer, dict) or answer.get("type") != "noul":
                 raise GuardError("OneJev缺少审核项或类型不正确，本次未完成审核。")
@@ -130,7 +134,7 @@ class OneJev:
                 raise GuardError("OneJev审核分数无效，本次未完成审核。")
             scores[key] = float(score)
         intent = None
-        if settings.intent_enabled:
+        if "intent" in body["questions"]:
             answer = value["answers"].get("intent")
             if not isinstance(answer, dict) or answer.get("type") != "choice":
                 raise GuardError("OneJev缺少发言意图，本次未完成审核。")

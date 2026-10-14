@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from dataclasses import asdict
 
+from .batching import build_state, location_request, queued_at, screen_request, spot_check
 from .categories import CATEGORIES
 from .client import OneJev
 from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncertain
@@ -196,15 +197,15 @@ class Service:
                     await self.sleep(1)
                     continue
                 self.wake.clear()
-                case = await self.store.call("next_case", self.served)
-                if case is None:
+                cases, wait = await self.store.call("next_work", self.served, self.settings(), self.clock())
+                if not cases:
                     try:
-                        await asyncio.wait_for(self.wake.wait(), 1)
+                        await asyncio.wait_for(self.wake.wait(), min(1, wait))
                     except asyncio.TimeoutError:
                         pass
                 else:
-                    self.served[case["scope"]] = self.clock()
-                    await self.process(case)
+                    self.served[cases[0]["scope"]] = self.clock()
+                    await self.dispatch(cases)
                 if self.clock() - self.last_maintenance >= 60:
                     self.journal.check()
                     more = self.settings().advanced
@@ -249,6 +250,225 @@ class Service:
             raise Deferred("插件停止、群已关闭或配置已变化，本次不继续操作。")
         return settings, policy
 
+    async def invoke_model(self, case, settings, call, stage="detail", sid=None):
+        """Record one physical HTTP call once, including failures and interrupted calls."""
+        started = time.monotonic()
+        result, error = None, ""
+        try:
+            result = await call()
+            self.model_cooldown = 0
+            await self.store.call("put", "model-cooldown", 0)
+            return result
+        except asyncio.CancelledError:
+            error = "插件停止中断了请求，服务端可能仍在计算"
+            await asyncio.shield(self.store.call("put", "model-cooldown", self.clock() + 60))
+            raise
+        except GuardError as exc:
+            error = str(exc)
+            if not isinstance(exc, InputRejected):
+                self.model_cooldown = self.clock() + 60
+                await self.store.call("put", "model-cooldown", self.model_cooldown)
+            raise
+        finally:
+            await asyncio.shield(
+                self.store.call(
+                    "record_call",
+                    case["id"],
+                    self.clock(),
+                    result,
+                    (time.monotonic() - started) * 1000,
+                    error,
+                    stage,
+                    sid,
+                )
+            )
+            if sid is not None:
+                await asyncio.shield(
+                    self.store.call(
+                        "finish_screening",
+                        sid,
+                        self.clock(),
+                        result,
+                        error,
+                        stage == "locate"
+                        or bool(result and max(result.scores.values()) >= settings.screen_threshold),
+                    )
+                )
+
+    async def batch_live(self, cases, check_age=True):
+        live = []
+        for old in cases:
+            case = await self.store.call("case", old["id"])
+            if case is None or case["state"] != "auditing":
+                continue
+            try:
+                settings, _ = self.policy_for(case)
+                if check_age and self.clock() - queued_at(case) > settings.advanced.max_queue_seconds:
+                    raise Deferred("队列等待过长，未完成实时审核。")
+                if self.clock() < self.model_cooldown:
+                    raise Deferred("模型服务处于故障冷却期，本次未完成审核。")
+                if case["human"]:
+                    raise Deferred("已人工标记，不继续自动审核。")
+                message = case["data"]["message"]
+                if (case["scope"], message["mid"]) in self.invalidated:
+                    raise Deferred("消息已撤回，不继续审核。")
+                if message["reply"] and (case["scope"], message["reply"]) in self.invalidated:
+                    raise Deferred("引用原文已经撤回，本条未完整审核。")
+                live.append(case)
+            except GuardError as exc:
+                await self.store.call("finish", case["id"], "incomplete", {"reason": str(exc)}, self.clock())
+        return live
+
+    async def dispatch(self, cases):
+        if cases[0]["data"].get("batch", {}).get("phase") == "locate":
+            await self.process_location(cases)
+        elif len(cases) == 1:
+            await self.process(cases[0])
+        else:
+            await self.process_batch(cases)
+
+    async def after_screen(self, cases, result, refs, labels, candidates, priorities=None):
+        """Finish clear cases now; queue individual detail, yielding model fairness."""
+        priorities = priorities or {}
+        for case in await self.batch_live(cases, check_age=False):
+            settings, _ = self.policy_for(case)
+            sampled = case["id"] not in candidates and spot_check(case, settings)
+            metadata = {
+                "screening_ids": refs,
+                "label": labels[case["id"]],
+                "threshold": settings.screen_threshold,
+                "spot_check": sampled,
+                "priority": priorities.get(case["id"], 0.5) if case["id"] in candidates else 0,
+            }
+            if case["id"] in candidates or sampled:
+                await self.store.call(
+                    "queue_stage", case["id"], {**metadata, "phase": "detail"}, self.clock()
+                )
+            else:
+                await self.store.call("patch", case["id"], {"batch": metadata})
+                await self.store.call(
+                    "finish",
+                    case["id"],
+                    "allowed",
+                    {
+                        "audit_path": "batch_clear",
+                        "actual_model": result.model,
+                        "reason": "批量初筛未命中，未进行逐条细审；不代表保证无风险。",
+                        "notification_ready": False,
+                        "auto_ready": False,
+                        "actions_pending": False,
+                    },
+                    self.clock(),
+                )
+        self.wake.set()
+
+    async def process_batch(self, cases):
+        try:
+            live = await self.batch_live(cases)
+            if len(live) < 2:
+                for case in live:
+                    await self.process(case)
+                return
+            settings, _ = self.policy_for(live[0])
+            state = build_state(live, settings, self.invalidated)
+            labels = {c["id"]: row[0] for c, row in zip(live, state["待初筛消息"])}
+            request = screen_request(state, settings)
+            sid = await self.store.call("begin_screening", live, "screen", request, self.clock())
+            result = await self.invoke_model(
+                live[0], settings, lambda: self.model.evaluate_request(request, settings), "screen", sid
+            )
+            keys = [key for key, score in result.scores.items() if score >= settings.screen_threshold]
+            live = await self.batch_live(live, check_age=False)
+            if keys and len(live) > 2 and location_request(state, settings, keys) is not None:
+                for case in live:
+                    await self.store.call(
+                        "queue_stage",
+                        case["id"],
+                        {
+                            "screening_ids": [sid],
+                            "label": labels[case["id"]],
+                            "threshold": settings.screen_threshold,
+                            "phase": "locate",
+                            "keys": keys,
+                            "priority": 0.5,
+                        },
+                        self.clock(),
+                    )
+                self.wake.set()
+            else:
+                await self.after_screen(
+                    live, result, [sid], labels, {c["id"] for c in live} if keys else set()
+                )
+            self.journal.record(
+                "批量初筛完成", screening=sid, messages=len(cases), scores=result.scores, harmful=bool(keys)
+            )
+        except InputRejected as exc:
+            self.journal.record("批量输入被拒绝，回退逐条", reason=str(exc))
+            await self.queue_fallback(cases)
+        except asyncio.CancelledError:
+            await asyncio.shield(self.finish_batch(cases, "插件停止中断了批量审核，未补审。"))
+            raise
+        except GuardError as exc:
+            await self.finish_batch(cases, str(exc))
+
+    async def process_location(self, cases):
+        try:
+            live = await self.batch_live(cases)
+            if not live:
+                return
+            settings, _ = self.policy_for(live[0])
+            batch = live[0]["data"]["batch"]
+            sid = batch["screening_ids"][0]
+            shared = await self.store.call("screening", sid)
+            if shared is None:
+                raise Deferred("关联初筛记录不可用，未完成候选定位。")
+            labels = {c["id"]: c["data"]["batch"]["label"] for c in live}
+            active = set(labels.values())
+            state = shared["data"]["request"]["state"]
+            state = {**state, "待初筛消息": [row for row in state["待初筛消息"] if row[0] in active]}
+            request = location_request(state, settings, batch["keys"])
+            if request is None or len(live) <= 2:
+                await self.queue_fallback(live)
+                return
+            lid = await self.store.call("begin_screening", live, "locate", request, self.clock())
+            result = await self.invoke_model(
+                live[0], settings, lambda: self.model.evaluate_request(request, settings), "locate", lid
+            )
+            priorities = {
+                c["id"]: max(result.scores[labels[c["id"]] + "__" + key] for key in batch["keys"])
+                for c in live
+            }
+            candidates = {cid for cid, score in priorities.items() if score >= settings.screen_threshold}
+            await self.after_screen(live, result, [sid, lid], labels, candidates, priorities)
+            self.journal.record(
+                "候选定位完成", screening=lid, candidates=len(candidates), harmful=bool(candidates)
+            )
+        except InputRejected:
+            await self.queue_fallback(cases)
+        except asyncio.CancelledError:
+            await asyncio.shield(self.finish_batch(cases, "插件停止中断了候选定位，未补审。"))
+            raise
+        except GuardError as exc:
+            await self.finish_batch(cases, str(exc))
+
+    async def queue_fallback(self, cases):
+        for case in await self.batch_live(cases, check_age=False):
+            old = case["data"].get("batch", {})
+            await self.store.call(
+                "queue_stage",
+                case["id"],
+                {"screening_ids": [], "label": "", **old, "phase": "detail", "priority": 0.5},
+                self.clock(),
+            )
+        self.wake.set()
+
+    async def finish_batch(self, cases, reason):
+        for old in cases:
+            current = await self.store.call("case", old["id"])
+            if current and current["state"] == "auditing":
+                await self.store.call("finish", old["id"], "incomplete", {"reason": reason}, self.clock())
+        self.journal.record("批量审核未完成", cases=[c["id"] for c in cases], reason=reason)
+
     async def process(self, case):
         cid, data = case["id"], case["data"]
         try:
@@ -256,7 +476,7 @@ class Service:
             message = data["message"]
             if (message["scope"], message["mid"]) in self.invalidated:
                 return
-            if self.clock() - case["created"] > settings.advanced.max_queue_seconds:
+            if self.clock() - queued_at(case) > settings.advanced.max_queue_seconds:
                 raise Deferred("队列等待过长，未完成实时审核。")
             if self.clock() < self.model_cooldown:
                 raise Deferred("模型服务处于故障冷却期，本次未完成审核。")
@@ -315,44 +535,25 @@ class Service:
                     "context_trimmed": original_count - len(context),
                 },
             )
-            started = time.monotonic()
-            try:
-                result = await self.model.evaluate(state, settings, media)
-            except asyncio.CancelledError:
-                await asyncio.shield(self.store.call("put", "model-cooldown", self.clock() + 60))
-                await asyncio.shield(
-                    self.store.call(
-                        "record_call",
-                        cid,
-                        self.clock(),
-                        None,
-                        (time.monotonic() - started) * 1000,
-                        "插件停止中断了请求，服务端可能仍在计算",
-                    )
-                )
-                raise
-            except GuardError as exc:
-                if not isinstance(exc, InputRejected):
-                    self.model_cooldown = self.clock() + 60
-                    await self.store.call("put", "model-cooldown", self.model_cooldown)
-                await self.store.call(
-                    "record_call", cid, self.clock(), None, (time.monotonic() - started) * 1000, str(exc)
-                )
-                raise
-            await self.store.call("record_call", cid, self.clock(), result)
-            self.model_cooldown = 0
-            await self.store.call("put", "model-cooldown", 0)
+            result = await self.invoke_model(
+                case, settings, lambda: self.model.evaluate(state, settings, media)
+            )
             self.policy_for(case)
             decision = decide(result, settings, policy, current_matches)
             if message["reply"] and (message["scope"], message["reply"]) in self.invalidated:
                 missing.append("引用原文在审核期间被撤回")
             flagged, auto, warn = decision.flagged, decision.recall, decision.warn
+            if flagged and data.get("batch"):
+                await self.store.call("flag_screenings", data["batch"]["screening_ids"])
+                if data["batch"].get("spot_check"):
+                    self.journal.record("初筛抽查发现疑点", case=cid, harmful=True)
             state = "incomplete" if missing else "review" if flagged else "allowed"
             case = await self.store.call(
                 "finish",
                 cid,
                 state,
                 {
+                    "audit_path": "detail",
                     "scores": result.scores,
                     "notification_ready": decision.notify,
                     "actual_model": result.model,

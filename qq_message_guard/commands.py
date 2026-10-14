@@ -54,6 +54,7 @@ class Commands:
             settings = self.s.settings()
             stats = await self.s.store.call("stats", self.s.clock())
             calls, states = stats["calls"], stats["states"]
+            stages = stats["stages"]
             groups = (
                 "；".join(
                     f"{p.group_id} 撤回{'开' if p.auto_recall else '关'}、"
@@ -67,13 +68,19 @@ class Commands:
             )
             notice_thresholds = "、".join(f"{check.name} {check.notify_at:.2f}" for check in settings.checks)
             return (
-                f"群消息审核 v0.3.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.4.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
                 f"模型调用{calls['n']}次，成功{calls['ok']}次，失败{calls['n'] - calls['ok']}次；"
                 f"输入{calls['input']} tokens，输出{calls['output']} tokens；"
                 f"平均请求{calls['elapsed'] / 1000:.2f}秒。\n"
+                f"初筛{stages.get('screen', 0)}次、定位{stages.get('locate', 0)}次、"
+                f"逐条细审{stages.get('detail', 0)}次；初筛结束{stats['screened_clear']}条、"
+                f"抽查{stats['spot_checks']}条。\n"
+                f"批量初筛{'开' if settings.batch.enabled else '关'}：最多{settings.batch.max_messages}条、"
+                f"最多等{settings.batch.wait_seconds}秒；门槛{settings.screen_threshold:.2f}，"
+                f"抽查{settings.batch.spot_check_percent}%。\n"
                 f"当前排队{stats['queue']['n']}条，最早已等{stats['queue']['oldest_seconds']:.0f}秒；"
                 f"超过{settings.advanced.max_queue_seconds}秒记为未完整审核。\n"
                 f"上下文：群内{settings.advanced.context_messages}条＋同作者"
@@ -105,14 +112,23 @@ class Commands:
                 self.s.journal.record("人工请求撤回", case=cid, actor=actor)
                 return await self.s.recall(case, manual=True)
             data, message = case["data"], case["data"]["message"]
+            batch = data.get("batch")
+            batch_info = (
+                f"初筛记录：{'、'.join(str(sid) for sid in batch['screening_ids'])}；"
+                f"{'抽查细审' if batch.get('spot_check') else '候选细审' if data.get('audit_path') == 'detail' else '初筛结束'}\n"
+                if batch
+                else ""
+            )
             local = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8)))
             # Windows Python 3.10's strftime encodes the format through LC_TIME.
             # Keep Chinese literals outside the OS formatter, independent of locale.
             stamp = f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}:{local.second:02d}"
             ops = await self.s.store.call("operations", cid)
             return (
-                lines(case) + f"\n时间：{stamp}\n模型：{data.get('actual_model', '未完成调用')}\n"
-                f"说明：{data.get('reason') or '请结合群规人工判断，分数不代表现实违规概率。'}\n"
+                lines(case)
+                + f"\n时间：{stamp}\n模型：{data.get('actual_model', '未完成调用')}\n"
+                + batch_info
+                + f"说明：{data.get('reason') or '请结合群规人工判断，分数不代表现实违规概率。'}\n"
                 f"覆盖缺失：{'；'.join(data.get('missing', [])) or '无已知缺失'}\n"
                 f"操作：{'；'.join(op['kind'] + ':' + op['state'] for op in ops) or '无'}\n"
                 f"文字：\n{message['text'] or '没有文字，请查看本地审核详情与图片证据。'}"

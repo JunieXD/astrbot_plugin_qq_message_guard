@@ -98,5 +98,13 @@
   ],
   "notify_users": [],
   "intent_enabled": true,
-  "ocr_enabled": true
+  "ocr_enabled": true,
+  "batch": {
+    "enabled": true,
+    "max_messages": 8,
+    "wait_seconds": 20,
+    "overlap_messages": 10,
+    "threshold": 0.3,
+    "spot_check_percent": 10
+  }
 }

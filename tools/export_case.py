@@ -22,6 +22,23 @@ def export(database, cid):
         case["calls"] = [
             dict(row) for row in db.execute("SELECT * FROM calls WHERE case_id=? ORDER BY id", (cid,))
         ]
+        ids = case["data"].get("batch", {}).get("screening_ids", [])
+        case["screenings"] = []
+        for sid in ids:
+            row = db.execute("SELECT * FROM screenings WHERE id=?", (sid,)).fetchone()
+            if row:
+                shared = dict(row)
+                shared["data"] = json.loads(shared["data"])
+                shared["case_ids"] = json.loads(shared["case_ids"])
+                case["screenings"].append(shared)
+        if ids:
+            calls = {row["id"]: row for row in case["calls"]}
+            for row in db.execute(
+                "SELECT * FROM calls WHERE screening_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(ids),),
+            ):
+                calls[row["id"]] = dict(row)
+            case["calls"] = sorted(calls.values(), key=lambda row: row["id"])
         return case
 
 
