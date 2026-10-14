@@ -30,10 +30,12 @@ def decide(result, settings, policy, current_matches):
     if keyword_hit:
         reasons.append("当前消息命中词义词库，仅提示复核，不直接处罚")
     if flagged and not action_ok:
-        reasons.append("发言意图为举报制止、正常或不明确，仅留存复核，不自动操作或通知")
-    notify = action_ok and any(result.scores[c.key] >= c.notify_at for c in settings.checks)
+        reasons.append("发言意图为举报制止、正常或不明确，不自动撤回或@，由管理员复核")
+    # An alert asks for human review, not punishment. Conflicting category and
+    # intent answers are exactly the evidence administrators need to see.
+    notify = any(result.scores[c.key] >= c.notify_at for c in settings.checks)
     punishable = [c for c in settings.checks if CATEGORIES[c.name].punishable]
-    if flagged and action_ok and not notify:
+    if flagged and not notify:
         reasons.append("未达到管理员通知门槛，不发送管理员通知")
     return Decision(
         flagged,

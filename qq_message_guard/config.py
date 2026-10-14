@@ -34,7 +34,7 @@ DEFAULT_RULES = (
     "禁止政治敏感事件及邪教话题的闲聊、影射、调侃，以及粗俗的性器官、性能力、性交易玩笑。"
     "普通政策、历史、旅游、医学讨论及对违规内容的举报和劝阻不算违规。"
 )
-QUESTION_VERSION = "qq-message-guard-categories-v3"
+QUESTION_VERSION = "qq-message-guard-categories-v4"
 
 
 def fingerprint(value):
@@ -152,7 +152,7 @@ class Batch:
     wait_seconds: int = 20
     overlap_messages: int = 10
     threshold: float = 0.30
-    spot_check_percent: int = 10
+    spot_check_percent: int = 0
 
 
 @dataclass(frozen=True)
@@ -205,7 +205,7 @@ def parse_settings(raw):
         wait_seconds=integer(batch.get("wait_seconds", 20), "初筛最长等待秒数", 1, 30),
         overlap_messages=integer(batch.get("overlap_messages", 10), "初筛重叠背景条数", 0, 24),
         threshold=number(batch.get("threshold", 0.30), "初筛继续审核门槛", 0.01, 0.5),
-        spot_check_percent=integer(batch.get("spot_check_percent", 10), "初筛抽查百分比", 0, 100),
+        spot_check_percent=integer(batch.get("spot_check_percent", 0), "初筛抽查百分比", 0, 100),
     )
     groups = raw.get("groups", [])
     if not isinstance(groups, list) or len(groups) > 50:

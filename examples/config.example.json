@@ -105,6 +105,6 @@
     "wait_seconds": 20,
     "overlap_messages": 10,
     "threshold": 0.3,
-    "spot_check_percent": 10
+    "spot_check_percent": 0
   }
 }

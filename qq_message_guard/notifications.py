@@ -29,15 +29,21 @@ def notification_text(cases, policy, settings):
         )[:40]
         if not name.strip() or matches(name, settings.terms):
             name = "群成员"
-        topics = [
-            names.get(check.key, check.name)
-            for check in settings.checks
-            if check.key != "rules" and data.get("scores", {}).get(check.key, 0) >= check.notify_at
-        ]
+        hits = sorted(
+            (
+                (names.get(check.key, check.name), data.get("scores", {}).get(check.key, 0))
+                for check in settings.checks
+                if data.get("scores", {}).get(check.key, 0) >= check.notify_at
+            ),
+            key=lambda hit: hit[1],
+            reverse=True,
+        )
+        topics = [name for name, _ in hits if name != "群规"]
         if not topics:  # Legacy composite rules have no independent category score.
             topics = [topic_names.get(hit["类别"], hit["类别"]) for hit in data.get("keyword_matches", [])]
         topics = list(dict.fromkeys(topics))
         suspicion = "、".join(topics[:3]) if topics else "可能违反群规，需要人工判断"
+        confidence = "、".join(f"{name} {score:.1%}" for name, score in hits[:3])
         if case["state"] == "recalled":
             handled = "原消息已撤回"
         elif case["state"] in ("unknown", "failed"):
@@ -48,5 +54,8 @@ def notification_text(cases, policy, settings):
             handled = "当前未自动处理，请人工复核"
         local = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8)))
         stamp = f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}:{local.second:02d}"
-        parts.append(f"{name}（QQ {message['user']}）\n发言时间：{stamp}\n疑点：{suspicion}\n处理：{handled}")
+        parts.append(
+            f"{name}（QQ {message['user']}）\n发言时间：{stamp}\n疑点：{suspicion}"
+            f"\n置信度：{confidence or '暂无'}（模型评分）\n处理：{handled}"
+        )
     return f"🛡️ 发言审核提醒\n来源群：{title}\n" + "\n\n".join(parts)

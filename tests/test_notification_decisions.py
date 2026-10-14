@@ -29,24 +29,63 @@ async def test_ambiguous_scores_are_retained_without_qq_calls(env, score, confid
 
 
 @pytest.mark.parametrize(
-    "score,choice,confidence",
+    "choice,confidence",
     [
-        (0.79, "participating", 0.95),  # Clear attribution, insufficient violation score.
-        (0.99, "participating", 0.59),  # High score, uncertain attribution.
-        (0.99, "normal", 0.95),
-        (0.99, "report_or_stop", 0.95),
+        ("participating", 0.59),
+        ("normal", 0.95),
+        ("report_or_stop", 0.95),
     ],
 )
-async def test_both_notification_score_and_attribution_are_required(env, score, choice, confidence):
-    env.configure(notify_private=True, notify_group=True, admin_group="123456")
+async def test_high_score_with_uncertain_or_safe_intent_notifies_without_punishment(env, choice, confidence):
+    env.configure(
+        auto_recall=True, warn_member=True, notify_private=True, notify_group=True, admin_group="123456"
+    )
     env.box.settings = replace(env.box.settings, notify_users=("300001",))
-    env.model.score = score
+    env.model.score = 0.99
     env.model.intent = Intent(choice, {}, confidence)
     await env.speak()
     case = await env.process()
     await env.s.send_alerts()
+    assert case["flagged"] and case["data"]["notification_ready"]
+    assert not case["data"]["auto_ready"] and not case["data"]["actions_pending"]
+    assert [action for action, _ in env.bot.writes] == ["send_private_msg", "send_group_msg"]
+    assert not any(action == "get_msg" for action, _ in env.bot.reads)
+
+
+async def test_clear_intent_below_notification_threshold_still_does_not_notify(env):
+    env.configure(notify_group=True, admin_group="123456")
+    env.model.score = 0.79
+    await env.speak()
+    case = await env.process()
+    await env.s.send_alerts()
     assert case["flagged"] and not case["data"]["notification_ready"]
-    assert not env.bot.reads and not env.bot.writes
+    assert not env.bot.writes
+
+
+@pytest.mark.parametrize("score,confidence", [(0.887177, 0.481178), (0.903036, 0.575934)])
+async def test_historical_sensitive_scores_reach_admin_without_uncertain_punishment(env, score, confidence):
+    env.configure(auto_recall=True, warn_member=True, notify_group=True, admin_group="123456")
+    env.box.settings = replace(env.box.settings, checks=(Check("敏感话题"),))
+    env.model.score = score
+    env.model.intent = Intent("participating", {}, confidence)
+    await env.speak()
+    case = await env.process()
+    await env.s.send_alerts()
+    assert case["data"]["notification_ready"] and not case["data"]["auto_ready"]
+    assert [action for action, _ in env.bot.writes] == ["send_group_msg"]
+
+
+async def test_sensitive_notification_gate_can_cover_a_lower_contextual_score(env):
+    env.configure(auto_recall=True, warn_member=True, notify_group=True, admin_group="123456")
+    env.box.settings = replace(env.box.settings, checks=(Check("敏感话题", notify_at=0.75),))
+    env.model.score = 0.788718
+    env.model.intent = Intent("participating", {}, 0.574376)
+    await env.speak()
+    case = await env.process()
+    await env.s.send_alerts()
+    assert case["data"]["notification_ready"] and not case["data"]["auto_ready"]
+    assert [action for action, _ in env.bot.writes] == ["send_group_msg"]
+    assert "敏感话题 78.9%" in str(env.bot.writes[0])
 
 
 async def test_keyword_match_alone_never_notifies(env):
