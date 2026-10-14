@@ -1,6 +1,7 @@
 import importlib
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -105,3 +106,28 @@ async def test_invalid_config_can_be_reloaded_without_leaked_lock(plugin_class, 
         assert plugin.service is not None
     finally:
         await plugin.terminate()
+
+
+async def test_picture_command_is_admin_only_and_does_not_echo_a_second_response(
+    plugin_class, env, monkeypatch
+):
+    await env.speak("Private evidence must not be echoed as plain text.")
+    case = await env.process()
+    env.box.settings = replace(
+        env.box.settings, evidence=replace(env.box.settings.evidence, review_images=True)
+    )
+    delivered = []
+
+    async def send_review(record, actor, pid, account):
+        delivered.append((record["id"], actor, pid, account))
+
+    monkeypatch.setattr(env.s, "send_review", send_review)
+    plugin = plugin_class(env.context, {})
+    plugin.service = env.s
+    denied = Event(False, f"/消息审核 查看 {case['id']}")
+    await plugin.command(denied)
+    assert denied.stopped and not delivered and not denied.sent
+    allowed = Event(True, f"/消息审核 查看 {case['id']}")
+    await plugin.command(allowed)
+    assert delivered == [(case["id"], "300001", "qq", "100001")]
+    assert allowed.stopped and allowed.sent == []

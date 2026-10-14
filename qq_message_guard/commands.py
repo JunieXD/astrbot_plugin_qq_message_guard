@@ -68,7 +68,7 @@ class Commands:
             )
             notice_thresholds = "、".join(f"{check.name} {check.notify_at:.2f}" for check in settings.checks)
             return (
-                f"群消息审核 v0.4.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.6.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
@@ -112,6 +112,14 @@ class Commands:
                 self.s.journal.record("人工请求撤回", case=cid, actor=actor)
                 return await self.s.recall(case, manual=True)
             data, message = case["data"], case["data"]["message"]
+            if self.s.settings().evidence.review_images:
+                try:
+                    await self.s.send_review(case, actor, pid, account)
+                    return None  # Already delivered with pacing and operation journaling.
+                except GuardError as exc:
+                    self.s.journal.record("查看证据未完成", case=cid, actor=actor, reason=str(exc))
+                    return f"#{cid} 证据图片未确认送达：{exc}\n群 {message['group']} · QQ {message['user']}\n原文保存在本机 evidence/{cid}-local.html，不会回退发送原文。"
+            await self.s.evidence.archive(case)
             batch = data.get("batch")
             batch_info = (
                 f"初筛记录：{'、'.join(str(sid) for sid in batch['screening_ids'])}；"
@@ -131,7 +139,7 @@ class Commands:
                 + f"说明：{data.get('reason') or '请结合群规人工判断，分数不代表现实违规概率。'}\n"
                 f"覆盖缺失：{'；'.join(data.get('missing', [])) or '无已知缺失'}\n"
                 f"操作：{'；'.join(op['kind'] + ':' + op['state'] for op in ops) or '无'}\n"
-                f"文字：\n{message['text'] or '没有文字，请查看本地审核详情与图片证据。'}"
+                f"原文仅在本机审核记录和 evidence/{cid}-local.html 中查看。"
             )
         if command == "标记" and len(args) == 3 and args[2] in ("误判", "违规"):
             cid = integer(args[1].lstrip("#"), "记录编号", 1, 10**12)

@@ -17,7 +17,7 @@ from .qq_message_guard.service import Service
 from .qq_message_guard.store import Store
 
 
-@register("astrbot_plugin_qq_message_guard", "JunieXD", "本地OneJev群消息审核与复核撤回", "0.5.2")
+@register("astrbot_plugin_qq_message_guard", "JunieXD", "本地OneJev群消息审核与复核撤回", "0.6.0")
 class QQMessageGuard(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context=context, config=config)
@@ -44,7 +44,7 @@ class QQMessageGuard(Star):
             await self.service.start()
             self.start_error = ""
             logger.info(
-                "QQ 群消息审核 v0.5.2 已加载；总开关：%s；群数：%s；审核项：%s；批量初筛：%s。",
+                "QQ 群消息审核 v0.6.0 已加载；总开关：%s；群数：%s；审核项：%s；批量初筛：%s。",
                 settings.enabled,
                 len(settings.groups),
                 len(settings.checks),
@@ -127,4 +127,5 @@ class QQMessageGuard(Star):
         finally:
             service.jobs.discard(task)
         # AstrBot stops its response pipeline after stop_event(), including yielded results.
-        await asyncio.wait_for(event.send(event.plain_result(result)), 15)
+        if result is not None:
+            await asyncio.wait_for(event.send(event.plain_result(result)), 15)

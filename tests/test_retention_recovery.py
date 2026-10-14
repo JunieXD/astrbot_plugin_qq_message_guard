@@ -45,7 +45,7 @@ async def test_evidence_deleted_on_same_retention(env):
     image = normal["data"]["media_records"][0]["file"]
     assert (env.path / image).exists()
     files = await env.store.call("maintain", env.clock() + 15 * 86400, 14, 60)
-    assert files == [image]
+    assert set(files) == {image, image + ".tmp"}
 
 
 async def test_restart_cancels_queued_audits_and_auto_actions(env):

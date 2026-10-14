@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 
 from qq_message_guard.client import Result, compress_image
-from qq_message_guard.config import Advanced, Check, Policy, Settings
+from qq_message_guard.config import Advanced, Check, Evidence, Policy, Settings
 from qq_message_guard.ocr import OcrResult
 from qq_message_guard.platform import Platform
 from qq_message_guard.service import Service
@@ -145,6 +145,7 @@ async def env(tmp_path):
             True,
             (policy,),
             checks=(Check(),),
+            evidence=Evidence(review_images=False),
             advanced=Advanced(
                 action_min_seconds=0, action_max_seconds=0, account_gap_min=0, account_gap_max=0
             ),

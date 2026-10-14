@@ -60,5 +60,12 @@
     "overlap_messages": 10,
     "threshold": 0.3,
     "spot_check_percent": 0
+  },
+  "evidence": {
+    "notify_images": false,
+    "review_images": true,
+    "line_width": 6,
+    "context_messages": 3,
+    "font_path": ""
   }
 }

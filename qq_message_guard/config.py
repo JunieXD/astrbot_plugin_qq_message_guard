@@ -158,6 +158,15 @@ class Batch:
 
 
 @dataclass(frozen=True)
+class Evidence:
+    notify_images: bool = False
+    review_images: bool = True
+    line_width: int = 6
+    context_messages: int = 3
+    font_path: str = ""
+
+
+@dataclass(frozen=True)
 class Settings:
     enabled: bool = False
     groups: tuple[Policy, ...] = ()
@@ -174,6 +183,7 @@ class Settings:
     # Immutable (label, aliases, meaning) entries, merged with built-ins.
     terms: tuple[tuple[str, tuple[str, ...], str], ...] = ()
     batch: Batch = field(default_factory=Batch)
+    evidence: Evidence = field(default_factory=Evidence)
 
     def group(self, gid):
         return next((p for p in self.groups if p.group_id == gid), None)
@@ -196,6 +206,19 @@ class Settings:
 def parse_settings(raw):
     if not isinstance(raw, dict):
         raise GuardError("插件配置应为对象。")
+    evidence = raw.get("evidence", {})
+    if not isinstance(evidence, dict):
+        raise GuardError("证据图片配置应为对象。")
+    font_path = evidence.get("font_path", "")
+    if not isinstance(font_path, str) or len(font_path) > 1000 or any(c in font_path for c in "\r\n\x00"):
+        raise GuardError("证据字体路径应为本机字体文件路径。")
+    pictures = Evidence(
+        notify_images=switch(evidence, "notify_images", False),
+        review_images=switch(evidence, "review_images", True),
+        line_width=integer(evidence.get("line_width", 6), "证据横线粗细", 0, 10),
+        context_messages=integer(evidence.get("context_messages", 3), "证据前文条数", 0, 5),
+        font_path=font_path.strip(),
+    )
     batch = raw.get("batch", {})
     if not isinstance(batch, dict):
         raise GuardError("批量初筛配置应为对象。")
@@ -384,4 +407,5 @@ def parse_settings(raw):
         ocr_timeout=integer(raw.get("ocr_timeout", 15), "OCR超时秒数", 3, 60),
         terms=tuple(parsed_terms),
         batch=batching,
+        evidence=pictures,
     )

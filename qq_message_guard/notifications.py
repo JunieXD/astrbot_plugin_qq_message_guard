@@ -62,5 +62,6 @@ def notification_text(cases, policy, settings):
             handled = "未撤回"
         local = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8)))
         stamp = f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}:{local.second:02d}"
-        parts.append(f"{name}（{message['user']}）\n{stamp}\n{evidence} · {handled}")
+        reference = f" · #{case['id']}" if settings.evidence.notify_images else ""
+        parts.append(f"{name}（{message['user']}）{reference}\n{stamp}\n{evidence} · {handled}")
     return f"🛡️ {title} · 审核提醒\n\n" + "\n\n".join(parts)

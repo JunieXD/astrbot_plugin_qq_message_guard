@@ -501,5 +501,41 @@
         }
       }
     }
+  },
+  "evidence": {
+    "description": "审核证据图片",
+    "type": "object",
+    "items": {
+      "notify_images": {
+        "description": "管理员通知附上证据图",
+        "type": "bool",
+        "default": false,
+        "hint": "每名成员附一张首页预览，更多页面可私聊 /消息审核 查看 编号。原始附件图片仅保存在本地。"
+      },
+      "review_images": {
+        "description": "查看指令回复证据图",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后仅回复定位信息，不回复原文。仅 AstrBot 机器人管理员可以使用查看指令。"
+      },
+      "line_width": {
+        "description": "文字横线粗细",
+        "type": "int",
+        "default": 6,
+        "hint": "0～10像素，0为不画线；本地清晰原图不画线。这种处理不能保证平台允许发送。"
+      },
+      "context_messages": {
+        "description": "图片展示几条前文",
+        "type": "int",
+        "default": 3,
+        "hint": "0～5条；实际引用另行展示。更多已留存上下文在本地证据页面查看。"
+      },
+      "font_path": {
+        "description": "本机中文字体文件",
+        "type": "string",
+        "default": "",
+        "hint": "留空自动寻找微软雅黑、Noto CJK 等系统字体；也可填写 .ttf/.ttc/.otf 文件完整路径。没有字体时只发送定位信息。"
+      }
+    }
   }
 }

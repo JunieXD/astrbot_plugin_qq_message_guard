@@ -5,6 +5,7 @@ import base64
 import hashlib
 import random
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import asdict
 
@@ -13,6 +14,7 @@ from .categories import CATEGORIES
 from .client import OneJev
 from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncertain
 from .decisions import decide
+from .evidence import EvidenceArchive, atomic_write, evidence_path, original_text
 from .lexicon import hints, screen_output
 from .messages import Message, bounded_context, message_id, model_state
 from .notifications import is_notifiable, notification_text
@@ -38,6 +40,7 @@ class Service:
         self.platform, self.journal = platform, journal
         self.clock, self.sleep = clock, sleep
         self.ocr = ocr if ocr is not None else Ocr()
+        self.evidence = EvidenceArchive(store)
         self.connections = {}
         self.invalidated = {}
         self.cancelled_cases = set()
@@ -143,6 +146,8 @@ class Service:
                 "binding": stamp,
                 "keyword_matches": hints(item, context, settings.terms)[0],
                 "keyword_review": policy.keyword_review,
+                "original_text": original_text(raw),
+                "original_image_count": sum(segment["type"] == "image" for segment in raw["message"]),
             }
             age = self.clock() - message.at
             initial, reason = "queued", ""
@@ -208,22 +213,7 @@ class Service:
                     await self.dispatch(cases)
                 if self.clock() - self.last_maintenance >= 60:
                     self.journal.check()
-                    more = self.settings().advanced
-                    files = await self.store.call(
-                        "maintain", self.clock(), more.retention_days, more.harmful_retention_days
-                    )
-                    root = self.store.path.parent
-                    removed = []
-                    for file in files:
-                        # Only remove application-created relative evidence files.
-                        if file.startswith("media/") and len(file.split("/")) == 2 and ".." not in file:
-                            try:
-                                (root / file).unlink(missing_ok=True)
-                                removed.append(file)
-                            except OSError as exc:
-                                self.journal.record("过期图片暂未清理", exception=exc)
-                    await self.store.call("purge_files", removed)
-                    self.journal.maintain(more.retention_days, more.harmful_retention_days)
+                    await self.maintain()
                     # Recall tombstones only need to live through bounded in-flight processing.
                     self.invalidated = {
                         key: until for key, until in self.invalidated.items() if until > self.clock()
@@ -495,7 +485,7 @@ class Service:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         media_records.append({"file": file, "sha256": digest, "bytes": len(content)})
                         await self.store.call("patch", cid, {"media_records": list(media_records)})
-                        await asyncio.to_thread(path.write_bytes, content)
+                        await self.evidence.thread(atomic_write, path, content)
                         media.append(image)
                         if settings.ocr_enabled:
                             try:
@@ -540,6 +530,12 @@ class Service:
             )
             self.policy_for(case)
             decision = decide(result, settings)
+            if decision.flagged:
+                try:
+                    await self.evidence.archive(await self.store.call("case", cid))
+                except GuardError as exc:
+                    missing.append("本地证据归档未完成")
+                    self.journal.record("证据归档未完成", case=cid, reason=str(exc), harmful=True)
             if message["reply"] and (message["scope"], message["reply"]) in self.invalidated:
                 missing.append("引用原文在审核期间被撤回")
             flagged, auto, warn = decision.flagged, decision.recall, decision.warn
@@ -653,6 +649,8 @@ class Service:
             if target["role"] in ("admin", "owner"):
                 raise Deferred("群主或管理员消息只供复核，请在QQ中人工处理。")
             await self.platform.locate(message)
+            # Commit the archive before delete_msg is allowed to leave this process.
+            await self.evidence.archive(current)
 
         try:
             self.gate(case, manual)
@@ -814,6 +812,7 @@ class Service:
                     ("group:" + policy.admin_group, "send_group_msg", {"group_id": policy.admin_group})
                 )
             pending = False
+            previews = {}
             for target, action, params in targets:
                 kind = "notice:" + target
                 previous = next(
@@ -833,6 +832,23 @@ class Service:
                 if not selected:
                     continue
                 text = notification_text(selected, policy, settings)
+                segments = [{"type": "text", "data": {"text": text}}]
+                if settings.evidence.notify_images:
+                    for item in selected:
+                        if item["id"] not in previews:
+                            try:
+                                pictures = await self.evidence.render(
+                                    item, settings.evidence, policy.display_name, settings.terms
+                                )
+                                previews[item["id"]] = await self.picture_segment(pictures.preview[0])
+                            except GuardError as exc:
+                                previews[item["id"]] = None
+                                self.journal.record(
+                                    "通知证据图片未生成", case=item["id"], reason=str(exc), harmful=True
+                                )
+                        # One first-page preview per member keeps batched notices bounded.
+                        if previews[item["id"]] is not None:
+                            segments.append(previews[item["id"]])
 
                 async def prepare(params=params):
                     if "group_id" in params:
@@ -846,7 +862,7 @@ class Service:
                         batch["anchor"],
                         kind,
                         action,
-                        {**params, "message": [{"type": "text", "data": {"text": text}}]},
+                        {**params, "message": segments},
                         gate,
                         prepare,
                         cooldowns=cooldowns,
@@ -861,6 +877,60 @@ class Service:
             if not pending:
                 await self.store.call("notified", batch["ids"])
                 await self.store.call("put", batch_key, None)
+
+    async def picture_segment(self, path):
+        try:
+            content = await self.evidence.thread(path.read_bytes)
+        except OSError as exc:
+            raise GuardError("证据图片暂不可用；不会回退发送原文。") from exc
+        return {"type": "image", "data": {"file": "base64://" + base64.b64encode(content).decode()}}
+
+    async def send_review(self, case, actor, pid, account):
+        settings = self.settings()
+        policy = settings.group(case["data"]["message"]["group"])
+        pictures = await self.evidence.render(
+            case, settings.evidence, policy.display_name if policy else "", settings.terms
+        )
+        segments = [await self.picture_segment(path) for path in pictures.preview]
+        message = {**case["data"]["message"], "platform": pid, "account": account}
+
+        def gate():
+            self.journal.check()
+            if self.stopping or self.settings().revision != settings.revision:
+                raise Deferred("插件正在停止或证据配置已变化，取消本次发送。")
+
+        async def prepare():
+            if await self.store.call("case", case["id"]) is None:
+                raise Deferred("记录已过期，不再发送。")
+
+        # Manual pictures also use account pacing, quotas and uncertain-delivery protection.
+        await self.platform.write(
+            message,
+            case["id"],
+            "review:" + uuid.uuid4().hex,
+            "send_private_msg",
+            {"user_id": actor, "message": segments},
+            gate,
+            prepare,
+        )
+        self.journal.record("管理员查看证据", case=case["id"], actor=actor)
+
+    async def maintain(self):
+        more = self.settings().advanced
+        # Prevent cleanup racing a renderer or a manual review of an old record.
+        async with self.evidence.lock:
+            files = await self.store.call(
+                "maintain", self.clock(), more.retention_days, more.harmful_retention_days
+            )
+            removed = []
+            for file in files:
+                try:
+                    evidence_path(self.store.path.parent, file).unlink(missing_ok=True)
+                    removed.append(file)
+                except (OSError, GuardError) as exc:
+                    self.journal.record("过期证据暂未清理", exception=exc)
+            await self.store.call("purge_files", removed)
+        self.journal.maintain(more.retention_days, more.harmful_retention_days)
 
     async def resume(self, group, pid, account):
         settings = self.settings()

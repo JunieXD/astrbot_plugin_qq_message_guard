@@ -66,7 +66,10 @@ class Store:
             await self.db.execute("ALTER TABLE calls ADD COLUMN stage TEXT NOT NULL DEFAULT 'detail'")
         if "screening_id" not in columns:
             await self.db.execute("ALTER TABLE calls ADD COLUMN screening_id INTEGER")
-        await self.db.execute("PRAGMA user_version=3")
+        history_columns = {row["name"] for row in await self._rows("PRAGMA table_info(history)")}
+        if "sender_name" not in history_columns:
+            await self.db.execute("ALTER TABLE history ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''")
+        await self.db.execute("PRAGMA user_version=4")
         await self.call("recover", time.time())
 
     async def close(self):
@@ -130,8 +133,8 @@ class Store:
         if message.unsupported:
             text += " [其他内容未识别]"
         await self.db.execute(
-            "INSERT OR IGNORE INTO history(scope,mid,user,at,text) VALUES(?,?,?,?,?)",
-            (message.scope, message.mid, message.user, message.at, text),
+            "INSERT OR IGNORE INTO history(scope,mid,user,at,text,sender_name) VALUES(?,?,?,?,?,?)",
+            (message.scope, message.mid, message.user, message.at, text, message.sender_name),
         )
         # Fixed count cache persists across reloads; no wall-clock cutoff.
         await self.db.execute(
@@ -585,7 +588,12 @@ class Store:
             data = json.loads(row["data"])
             await self.db.executemany(
                 "INSERT OR IGNORE INTO garbage VALUES(?)",
-                [(m["file"],) for m in data.get("media_records", []) if m.get("file")],
+                [
+                    (m["file"],)
+                    for m in [*data.get("media_records", []), *data.get("evidence_records", [])]
+                    if m.get("file")
+                ]
+                + [(m["file"] + ".tmp",) for m in data.get("media_records", []) if m.get("file")],
             )
             await self.db.execute("DELETE FROM calls WHERE case_id=? AND screening_id IS NULL", (row["id"],))
             await self.db.execute("DELETE FROM cases WHERE id=?", (row["id"],))
@@ -610,3 +618,17 @@ class Store:
 
     async def purge_files(self, files):
         await self.db.executemany("DELETE FROM garbage WHERE file=?", [(file,) for file in files])
+
+    async def evidence_files(self, cid, files):
+        case = await self.case(cid)
+        if case is None:
+            raise GuardError("审核记录不存在或已过期。")
+        registered = {m["file"] for m in case["data"].get("evidence_records", [])}
+        data = {
+            **case["data"],
+            "evidence_records": [{"file": file} for file in sorted(registered | set(files))],
+        }
+        # Viewing/archive bookkeeping must not change queued action state or retention age.
+        await self.db.execute(
+            "UPDATE cases SET data=? WHERE id=?", (json.dumps(data, ensure_ascii=False), cid)
+        )
