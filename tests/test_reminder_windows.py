@@ -186,7 +186,7 @@ async def test_batch_deduplicates_members_without_dropping_ninth_member(env):
         ids.append((await env.process())["id"])
     await env.s.send_alerts()
     text = str(env.bot.writes[0])
-    assert text.count("QQ " + U) == 1 and "发现 8 条" in text
+    assert text.count("QQ " + U) == 1 and text.count("发言时间：") == 8
     assert not (await env.store.call("case", ids[-1]))["notified"]
     env.clock.now += 61
     await env.s.send_alerts()

@@ -111,7 +111,8 @@ async def test_local_only_findings_cannot_hide_a_later_notification(env):
     risk = await env.process()
     await env.s.send_alerts()
     assert len(env.bot.writes) == 1
-    assert f"查看 {risk['id']}" in str(env.bot.writes[0])
+    assert (await env.store.call("operations", risk["id"]))[0]["state"] == "confirmed"
+    assert not (await env.store.call("case", ambiguous["id"]))["notified"]
 
 
 async def test_legacy_frozen_batch_does_not_bypass_new_notification_gate(env):
@@ -133,8 +134,8 @@ async def test_legacy_frozen_batch_does_not_bypass_new_notification_gate(env):
     )
     await env.s.send_alerts()
     text = str(env.bot.writes[0])
-    assert "发现 1 条" in text and f"查看 {risk['id']}" in text
-    assert f"查看 {ambiguous['id']}" not in text
+    assert text.count("发言时间：") == 1 and "QQ 200002" in text
+    assert "QQ 200001" not in text
 
 
 def test_existing_configs_receive_separate_notification_default():

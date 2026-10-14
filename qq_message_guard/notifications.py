@@ -21,8 +21,8 @@ def notification_text(cases, policy, settings):
     names = {v[0]: k for k, v in QUESTIONS.items()}
     topic_names = {"政治事件表达": "敏感话题", "宗教政治话题": "敏感话题", "粗俗性俚语": "粗俗性玩笑"}
     title = f"{policy.display_name}（{policy.group_id}）" if policy.display_name else policy.group_id
-    parts = [f"🛡️ 发言审核提醒\n来源群：{title}\n\n发现 {len(cases)} 条需要复核的发言"]
-    for index, case in enumerate(cases[:8], 1):
+    parts = []
+    for case in cases[:8]:
         data, message = case["data"], case["data"]["message"]
         name = "".join(
             c for c in message.get("sender_name", "") if not unicodedata.category(c).startswith("C")
@@ -47,12 +47,5 @@ def notification_text(cases, policy, settings):
             handled = "当前未自动处理，请人工复核"
         local = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8)))
         stamp = f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}:{local.second:02d}"
-        parts.append(
-            f"{index}. {name}（QQ {message['user']}）\n"
-            f"发言时间：{stamp}\n疑点：{suspicion}\n处理：{handled}\n"
-            f"查看：/消息审核 查看 {case['id']}"
-        )
-    if len(cases) > 8:
-        parts.append(f"另有 {len(cases) - 8} 条，私聊 /消息审核 待复核 {policy.group_id} 查看。")
-    parts.append("私聊机器人发送查看命令，可查看原文并复核。")
-    return "\n\n".join(parts)
+        parts.append(f"{name}（QQ {message['user']}）\n发言时间：{stamp}\n疑点：{suspicion}\n处理：{handled}")
+    return f"🛡️ 发言审核提醒\n来源群：{title}\n" + "\n\n".join(parts)

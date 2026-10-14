@@ -30,12 +30,13 @@ async def test_normal_messages_never_notify_but_detected_risk_does(env):
     assert not env.bot.writes
     env.model.score = 0.95
     await env.speak("法沦功", sender={"card": "测试群名片", "nickname": "昵称", "role": "member"})
-    case = await env.process()
+    await env.process()
     await env.s.send_alerts()
     assert len(env.bot.writes) == 1
     text = env.bot.writes[0][1]["message"][0]["data"]["text"]
     assert "鼠群" in text and "测试群名片" in text and "敏感话题" in text
-    assert f"/消息审核 查看 {case['id']}" in text and "\n\n1. " in text
+    assert text.startswith("🛡️ 发言审核提醒\n来源群：鼠群（100002）\n测试群名片（QQ 200001）\n")
+    assert len(text.splitlines()) == 6 and "查看" not in text
     assert "未完整审核" not in text and "tokens" not in text and "法沦功" not in text
     assert re.search(r"发言时间：\d+月\d+日 \d{2}:\d{2}:\d{2}", text)
 
@@ -73,7 +74,7 @@ async def test_pending_legacy_failure_batch_cannot_leak_runtime_errors(env):
     )
     await env.s.send_alerts()
     text = env.bot.writes[0][1]["message"][0]["data"]["text"]
-    assert "发现 1 条" in text and "图片下载" not in text
+    assert text.count("发言时间：") == 1 and "图片下载" not in text
 
 
 async def test_offline_replay_is_recorded_but_never_audited_or_notified(env):
@@ -96,4 +97,4 @@ async def test_notification_has_only_readable_evidence_and_limited_length(env):
     await env.speak("可疑发言")
     case = await env.process()
     text = notification_text([case] * 100, env.box.settings.groups[0], env.box.settings)
-    assert len(text) < 3800 and "另有 92 条" in text
+    assert len(text) < 3800 and text.count("发言时间：") == 8

@@ -67,7 +67,7 @@ class Commands:
             )
             notice_thresholds = "、".join(f"{check.name} {check.notify_at:.2f}" for check in settings.checks)
             return (
-                f"群消息审核 v0.2.3\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.2.4\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
