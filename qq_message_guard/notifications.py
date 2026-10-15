@@ -14,6 +14,7 @@ def is_notifiable(case):
         and case["data"].get("notification_ready")
         and not case["human"]
         and not case["data"].get("actions_pending")
+        and not case["data"].get("cache_invalidated")
     )
 
 

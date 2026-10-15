@@ -113,7 +113,7 @@ async def test_all_default_categories_are_persisted_and_keep_action_gates(env):
     await env.speak()
     case = await env.process()
     assert set(case["data"]["scores"]) == {c.key for c in Settings().checks}
-    assert case["data"]["question_version"] == "qq-message-guard-content-v5"
+    assert case["data"]["question_version"] == "qq-message-guard-content-v6"
     assert case["data"]["actions_pending"] and case["data"]["notification_ready"]
     await env.s.send_alerts()
     assert not env.bot.writes  # Admin delivery continues to wait for actual actions.

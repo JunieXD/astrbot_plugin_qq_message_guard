@@ -18,6 +18,10 @@ class InputRejected(GuardError):
     """The model rejected this input; it is not a service-wide outage."""
 
 
+class SkippedImage(GuardError):
+    """A deliberately excluded GIF/animation, not a failed safety assessment."""
+
+
 class Deferred(GuardError):
     """No write submitted; a later explicit action may be possible."""
 
@@ -33,7 +37,7 @@ DEFAULT_RULES = (
     "禁止色情资源、露骨性内容及未成年人性化表达、诈骗和违法招揽、"
     "现实暴力威胁与群体仇恨。按当前内容和实际引用判断，其他人的背景消息仅帮助消歧。"
 )
-QUESTION_VERSION = "qq-message-guard-content-v5"
+QUESTION_VERSION = "qq-message-guard-content-v6"
 
 
 def fingerprint(value):
@@ -108,6 +112,7 @@ class Policy:
     exempt_users: tuple[str, ...] = ()
     keyword_review: bool = True
     display_name: str = ""
+    skip_admins: bool = True
 
     @property
     def revision(self):
@@ -150,8 +155,8 @@ class Advanced:
 @dataclass(frozen=True)
 class Batch:
     enabled: bool = True
-    max_messages: int = 8
-    wait_seconds: int = 20
+    max_messages: int = 16
+    wait_seconds: int = 8
     overlap_messages: int = 10
     threshold: float = 0.30
     spot_check_percent: int = 0
@@ -164,6 +169,13 @@ class Evidence:
     line_width: int = 6
     context_messages: int = 3
     font_path: str = ""
+
+
+@dataclass(frozen=True)
+class Cache:
+    enabled: bool = True
+    hours: int = 24
+    max_entries: int = 256
 
 
 @dataclass(frozen=True)
@@ -184,6 +196,7 @@ class Settings:
     terms: tuple[tuple[str, tuple[str, ...], str], ...] = ()
     batch: Batch = field(default_factory=Batch)
     evidence: Evidence = field(default_factory=Evidence)
+    cache: Cache = field(default_factory=Cache)
 
     def group(self, gid):
         return next((p for p in self.groups if p.group_id == gid), None)
@@ -206,6 +219,14 @@ class Settings:
 def parse_settings(raw):
     if not isinstance(raw, dict):
         raise GuardError("插件配置应为对象。")
+    cache = raw.get("cache", {})
+    if not isinstance(cache, dict):
+        raise GuardError("表情图片缓存配置应为对象。")
+    caching = Cache(
+        enabled=switch(cache, "enabled", True),
+        hours=integer(cache.get("hours", 24), "图片缓存小时数", 1, 168),
+        max_entries=integer(cache.get("max_entries", 256), "图片缓存条目上限", 16, 2048),
+    )
     evidence = raw.get("evidence", {})
     if not isinstance(evidence, dict):
         raise GuardError("证据图片配置应为对象。")
@@ -224,8 +245,8 @@ def parse_settings(raw):
         raise GuardError("批量初筛配置应为对象。")
     batching = Batch(
         enabled=switch(batch, "enabled", True),
-        max_messages=integer(batch.get("max_messages", 8), "每批最多新消息", 2, 20),
-        wait_seconds=integer(batch.get("wait_seconds", 20), "初筛最长等待秒数", 1, 30),
+        max_messages=integer(batch.get("max_messages", 16), "每批最多新消息", 2, 20),
+        wait_seconds=integer(batch.get("wait_seconds", 8), "初筛最长等待秒数", 1, 30),
         overlap_messages=integer(batch.get("overlap_messages", 10), "初筛重叠背景条数", 0, 24),
         threshold=number(batch.get("threshold", 0.30), "初筛继续审核门槛", 0.01, 0.5),
         spot_check_percent=integer(batch.get("spot_check_percent", 0), "初筛抽查百分比", 0, 100),
@@ -275,6 +296,7 @@ def parse_settings(raw):
                 exempt_users=tuple(sorted({qq(x) for x in users})),
                 keyword_review=switch(item, "keyword_review", True),
                 display_name=display_name.strip(),
+                skip_admins=switch(item, "skip_admins", True),
             )
         )
     if len({p.group_id for p in policies}) != len(policies):
@@ -408,4 +430,5 @@ def parse_settings(raw):
         terms=tuple(parsed_terms),
         batch=batching,
         evidence=pictures,
+        cache=caching,
     )

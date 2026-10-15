@@ -13,6 +13,7 @@ STATES = {
     "recalled": "已撤回",
     "unknown": "操作结果不明",
     "failed": "操作失败",
+    "skipped": "按规则免审",
 }
 HELP = (
     "群消息审核（仅AstrBot机器人管理员可用）\n"
@@ -68,7 +69,7 @@ class Commands:
             )
             notice_thresholds = "、".join(f"{check.name} {check.notify_at:.2f}" for check in settings.checks)
             return (
-                f"群消息审核 v0.6.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.7.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
@@ -78,6 +79,8 @@ class Commands:
                 f"初筛{stages.get('screen', 0)}次、定位{stages.get('locate', 0)}次、"
                 f"逐条细审{stages.get('detail', 0)}次；初筛结束{stats['screened_clear']}条、"
                 f"抽查{stats['spot_checks']}条。\n"
+                f"缓存复用：纯图片审核{stats['image_cache_hits']}条、OCR {stats['ocr_cache_hits']}次；"
+                f"GIF免审{states.get('skipped', 0)}条。\n"
                 f"批量初筛{'开' if settings.batch.enabled else '关'}：最多{settings.batch.max_messages}条、"
                 f"最多等{settings.batch.wait_seconds}秒；门槛{settings.screen_threshold:.2f}，"
                 f"抽查{settings.batch.spot_check_percent}%。\n"

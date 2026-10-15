@@ -60,6 +60,10 @@ class Store:
                 stage TEXT NOT NULL, flagged INTEGER NOT NULL DEFAULT 0,
                 case_ids TEXT NOT NULL, data TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS screening_retention ON screenings(updated);
+            CREATE TABLE IF NOT EXISTS image_cache (
+                key TEXT PRIMARY KEY, source_case INTEGER NOT NULL, expires REAL NOT NULL,
+                accessed REAL NOT NULL, data TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS image_cache_expiry ON image_cache(expires);
         """)
         columns = {row["name"] for row in await self._rows("PRAGMA table_info(calls)")}
         if "stage" not in columns:
@@ -69,7 +73,7 @@ class Store:
         history_columns = {row["name"] for row in await self._rows("PRAGMA table_info(history)")}
         if "sender_name" not in history_columns:
             await self.db.execute("ALTER TABLE history ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''")
-        await self.db.execute("PRAGMA user_version=4")
+        await self.db.execute("PRAGMA user_version=5")
         await self.call("recover", time.time())
 
     async def close(self):
@@ -132,7 +136,7 @@ class Store:
             text += " [图片未识别]"
         if message.unsupported:
             text += " [其他内容未识别]"
-        await self.db.execute(
+        inserted = await self.db.execute(
             "INSERT OR IGNORE INTO history(scope,mid,user,at,text,sender_name) VALUES(?,?,?,?,?,?)",
             (message.scope, message.mid, message.user, message.at, text, message.sender_name),
         )
@@ -142,6 +146,7 @@ class Store:
             " (SELECT id FROM history WHERE scope=? ORDER BY id DESC LIMIT ?)",
             (message.scope, message.scope, capacity),
         )
+        return inserted.rowcount > 0
 
     async def recover(self, now):
         await self.db.execute(
@@ -213,11 +218,11 @@ class Store:
         await self.db.execute("UPDATE cases SET state='auditing' WHERE id=?", (row["id"],))
         return await self.case(row["id"])
 
-    async def next_work(self, served, settings, now):
+    async def next_work(self, served, settings, now, estimates=None):
         from .batching import choose_work
 
         rows = await self._rows("SELECT * FROM cases WHERE state='queued' ORDER BY created,id LIMIT 1000")
-        cases, wait = choose_work([self._case(row) for row in rows], served, settings, now)
+        cases, wait = choose_work([self._case(row) for row in rows], served, settings, now, estimates)
         await self.db.executemany("UPDATE cases SET state='auditing' WHERE id=?", [(c["id"],) for c in cases])
         return [await self.case(c["id"]) for c in cases], wait
 
@@ -382,6 +387,13 @@ class Store:
         if not case:
             raise GuardError("审核记录不存在或已过期。")
         data = {**case["data"], "human_actor": actor, "human_at": now}
+        await self.db.execute("DELETE FROM image_cache WHERE source_case=?", (cid,))
+        await self.db.execute(
+            "UPDATE cases SET action_ready=0,data=json_set(data,'$.cache_invalidated',json('true'),"
+            "'$.auto_ready',json('false'),'$.actions_pending',json('false'),"
+            "'$.notification_ready',json('false')) WHERE json_extract(data,'$.cache_source')=?",
+            (cid,),
+        )
         if human == "违规":
             await self.db.executemany(
                 "UPDATE screenings SET flagged=1,updated=? WHERE id=?",
@@ -563,6 +575,18 @@ class Store:
                     (now - 86400,),
                 )
             )["n"],
+            "image_cache_hits": (
+                await self._row(
+                    "SELECT count(*) n FROM cases WHERE created>? AND json_extract(data,'$.audit_path')='image_cache'",
+                    (now - 86400,),
+                )
+            )["n"],
+            "ocr_cache_hits": (
+                await self._row(
+                    "SELECT COALESCE(sum(json_extract(data,'$.cache_reuse.ocr_hits')),0) n FROM cases WHERE created>?",
+                    (now - 86400,),
+                )
+            )["n"],
             "spot_checks": (
                 await self._row(
                     "SELECT count(*) n FROM cases WHERE created>? AND json_extract(data,'$.batch.spot_check')=1",
@@ -597,6 +621,9 @@ class Store:
             )
             await self.db.execute("DELETE FROM calls WHERE case_id=? AND screening_id IS NULL", (row["id"],))
             await self.db.execute("DELETE FROM cases WHERE id=?", (row["id"],))
+        await self.db.execute(
+            "DELETE FROM image_cache WHERE expires<=? OR source_case NOT IN (SELECT id FROM cases)", (now,)
+        )
         expired = await self._rows(
             "SELECT id FROM screenings WHERE state!='running' AND updated<? AND (flagged=0 OR updated<?)",
             (now - days * 86400, now - harmful_days * 86400),
@@ -631,4 +658,31 @@ class Store:
         # Viewing/archive bookkeeping must not change queued action state or retention age.
         await self.db.execute(
             "UPDATE cases SET data=? WHERE id=?", (json.dumps(data, ensure_ascii=False), cid)
+        )
+
+    async def image_cache_get(self, key, now):
+        row = await self._row(
+            "SELECT i.*,c.human FROM image_cache i JOIN cases c ON c.id=i.source_case WHERE i.key=? AND i.expires>?",
+            (key, now),
+        )
+        if row is None or row["human"]:
+            return None
+        await self.db.execute("UPDATE image_cache SET accessed=? WHERE key=?", (now, key))
+        return {"source_case": row["source_case"], "value": json.loads(row["data"])}
+
+    async def image_cache_put(self, key, cid, value, now, hours, limit):
+        row = await self._row("SELECT human FROM cases WHERE id=?", (cid,))
+        if row is None or row["human"]:
+            return
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+        if len(encoded.encode()) > 1024 * 1024:
+            return
+        await self.db.execute(
+            "INSERT OR REPLACE INTO image_cache VALUES(?,?,?,?,?)",
+            (key, cid, now + hours * 3600, now, encoded),
+        )
+        await self.db.execute("DELETE FROM image_cache WHERE expires<=?", (now,))
+        await self.db.execute(
+            "DELETE FROM image_cache WHERE key NOT IN (SELECT key FROM image_cache ORDER BY accessed DESC,key LIMIT ?)",
+            (limit,),
         )

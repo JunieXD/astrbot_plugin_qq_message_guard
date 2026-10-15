@@ -13,7 +13,11 @@ from qq_message_guard.store import Store
 
 @pytest.fixture
 async def batch_env(env):
-    env.box.settings = replace(env.box.settings, checks=Settings().checks, batch=Batch(spot_check_percent=0))
+    env.box.settings = replace(
+        env.box.settings,
+        checks=Settings().checks,
+        batch=Batch(max_messages=8, wait_seconds=20, spot_check_percent=0),
+    )
     env.model.batch_calls = []
     env.model.screen_score = 0.1
     env.model.locate_score = 0.1

@@ -76,7 +76,7 @@
             "description": "不审核的QQ号",
             "type": "list",
             "default": [],
-            "hint": "每项一个QQ号。bot自己的消息始终忽略。管理员仍审核，只是不自动撤回或警告。"
+            "hint": "每项一个QQ号。bot自己的消息始终忽略。默认群主和管理员免审；可在本群设置中关闭免审。"
           },
           "keyword_review": {
             "description": "长期保存未完成的词义候选",
@@ -89,6 +89,12 @@
             "type": "string",
             "default": "",
             "hint": "可留空；例如填鼠群，方便管理员辨认来源。"
+          },
+          "skip_admins": {
+            "description": "群主和管理员免审",
+            "type": "bool",
+            "default": true,
+            "hint": "直接跳过QQ身份为群主或管理员的发言，不调用模型，不发审核通知；发言仍可作为其他消息的背景。"
           }
         }
       }
@@ -214,13 +220,13 @@
       "max_messages": {
         "description": "每批最多几条新消息",
         "type": "int",
-        "default": 8,
-        "hint": "2～20条，默认8；满批即处理，不必等定时结束。"
+        "default": 16,
+        "hint": "2～20条，默认16；满批即处理，不必等定时结束。"
       },
       "wait_seconds": {
         "description": "最多等待几秒",
         "type": "int",
-        "default": 20,
+        "default": 8,
         "hint": "1～30秒，从第一条排队开始计时；到期不足一批也处理。只有一条时直接细审。"
       },
       "overlap_messages": {
@@ -535,6 +541,30 @@
         "type": "string",
         "default": "",
         "hint": "留空自动寻找微软雅黑、Noto CJK 等系统字体；也可填写 .ttf/.ttc/.otf 文件完整路径。没有字体时只发送定位信息。"
+      }
+    }
+  },
+  "cache": {
+    "description": "表情图片缓存",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "复用重复图片处理结果",
+        "type": "bool",
+        "default": true,
+        "hint": "复用图片预处理和OCR；无附文、无引用的单张静态图片按图片内容独立审核后复用分数。有附文、引用或同作者风险承接时仍结合上下文重新审核。GIF直接免审。"
+      },
+      "hours": {
+        "description": "缓存保留小时数",
+        "type": "int",
+        "default": 24,
+        "hint": "1～168小时；到期重新处理。人工标记来源记录后清除其缓存。"
+      },
+      "max_entries": {
+        "description": "缓存条目上限",
+        "type": "int",
+        "default": 256,
+        "hint": "16～2048；OCR和审核结果共用上限，优先保留最近使用的条目。"
       }
     }
   }

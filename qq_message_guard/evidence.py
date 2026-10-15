@@ -132,6 +132,7 @@ def source_data(case):
         "ocr": data.get("ocr_records", []),
         "image_count": data.get("original_image_count", len(data.get("media_records", []))),
         "unsupported": message.get("unsupported", []),
+        "ignored_media": data.get("ignored_media", []),
     }
 
 
@@ -151,6 +152,13 @@ def local_html(source):
     if message["truncated"]:
         content.append(
             bubble("留存边界", "原消息超过20000字，仅留存开头；数据库中的审核结果不代表完整覆盖。")
+        )
+    if source["image_count"]:
+        content.append(
+            bubble(
+                "图片留存",
+                f"收到{source['image_count']}张，留存审核静图{len(source['media'])}张，GIF/动态图免审{len(source.get('ignored_media', []))}张。",
+            )
         )
     for media in source["media"]:
         relative = media.get("file", "")
@@ -266,7 +274,10 @@ class EvidenceArchive:
         blocks.append((f"本条发言 · {author}（{message['user']}）", text or "〔本条没有文字〕"))
         if source["image_count"]:
             blocks.append(
-                ("附件", f"共 {source['image_count']} 张图片；原始附件不随通知转发，请查看本地证据。")
+                (
+                    "附件",
+                    f"共 {source['image_count']} 张图片；留存静图 {len(source['media'])} 张，动态图免审 {len(source.get('ignored_media', []))} 张。原始附件不随通知转发。",
+                )
             )
         for row in source["ocr"]:
             ocr_text = row["text"][:800]

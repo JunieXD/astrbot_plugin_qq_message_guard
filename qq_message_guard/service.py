@@ -7,12 +7,20 @@ import random
 import time
 import uuid
 from collections import defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from .batching import build_state, location_request, queued_at, screen_request, spot_check
 from .categories import CATEGORIES
-from .client import OneJev
-from .config import QUESTION_VERSION, Deferred, GuardError, InputRejected, Uncertain
+from .client import OneJev, Result
+from .config import (
+    QUESTION_VERSION,
+    Deferred,
+    GuardError,
+    InputRejected,
+    SkippedImage,
+    Uncertain,
+    fingerprint,
+)
 from .decisions import decide
 from .evidence import EvidenceArchive, atomic_write, evidence_path, original_text
 from .lexicon import hints, screen_output
@@ -55,6 +63,7 @@ class Service:
         self.failure = ""
         self.model_cooldown = 0
         self.last_maintenance = 0
+        self.timings = {}
 
     async def start(self):
         # Observe local websocket identities only; never query or backfill QQ history.
@@ -104,6 +113,12 @@ class Service:
             policy = settings.group(message.group)
             if policy is None or not policy.enabled or (policy.bot_qq and policy.bot_qq != message.account):
                 return
+            if policy.skip_admins and message.role in ("admin", "owner"):
+                if await self.store.call("remember", message, settings.advanced.context_cache_messages):
+                    self.journal.record(
+                        "群主或管理员消息免审", group=message.group, user=message.user, mid=message.mid
+                    )
+                return
             context, quoted = await self.store.call(
                 "history_context",
                 message,
@@ -120,8 +135,6 @@ class Service:
             item["scope"] = message.scope
             if message.images and not settings.images_enabled:
                 missing.append("图片审核已关闭")
-            if len(message.images) > settings.advanced.max_images:
-                missing.append("图片数量超过审核上限")
             stamp = None
             online_since = self.clock()
             try:
@@ -202,7 +215,9 @@ class Service:
                     await self.sleep(1)
                     continue
                 self.wake.clear()
-                cases, wait = await self.store.call("next_work", self.served, self.settings(), self.clock())
+                cases, wait = await self.store.call(
+                    "next_work", self.served, self.settings(), self.clock(), self.timings
+                )
                 if not cases:
                     try:
                         await asyncio.wait_for(self.wake.wait(), min(1, wait))
@@ -260,6 +275,12 @@ class Service:
                 await self.store.call("put", "model-cooldown", self.model_cooldown)
             raise
         finally:
+            if result is not None:
+                kind = (
+                    stage if stage != "detail" else "image" if case["data"]["message"]["images"] else "text"
+                )
+                duration = min(90, max(1, result.elapsed_ms / 1000))
+                self.timings[kind] = self.timings.get(kind, duration) * 0.7 + duration * 0.3
             await asyncio.shield(
                 self.store.call(
                     "record_call",
@@ -468,36 +489,101 @@ class Service:
                 return
             if self.clock() - queued_at(case) > settings.advanced.max_queue_seconds:
                 raise Deferred("队列等待过长，未完成实时审核。")
-            if self.clock() < self.model_cooldown:
-                raise Deferred("模型服务处于故障冷却期，本次未完成审核。")
             missing = list(data["missing"])
             media = []
             media_records = []
             ocr_records = []
+            ignored_media = []
+            reuse = {"ocr_hits": 0, "decode_hits": 0}
+            self.media.cache_enabled = settings.cache.enabled
+            self.media.cache_hours = settings.cache.hours
             if settings.images_enabled:
-                for url in message["images"][: settings.advanced.max_images]:
+                for index, url in enumerate(message["images"]):
                     try:
                         image = await self.media.load(url, settings.advanced)
+                        if len(media) >= settings.advanced.max_images:
+                            missing.append("静态图片数量超过审核上限")
+                            continue
+                        reuse["decode_hits"] += int(getattr(self.media, "last_cache_hit", False))
                         content = base64.b64decode(image.split(",", 1)[1], validate=True)
                         digest = hashlib.sha256(content).hexdigest()
                         file = f"media/{cid}-{len(media) + 1}-{digest[:16]}.jpg"
                         path = self.store.path.parent / file
                         path.parent.mkdir(parents=True, exist_ok=True)
-                        media_records.append({"file": file, "sha256": digest, "bytes": len(content)})
+                        media_records.append(
+                            {
+                                "file": file,
+                                "sha256": digest,
+                                "bytes": len(content),
+                                "source_sha256": getattr(self.media, "last_source_digest", "") or digest,
+                            }
+                        )
                         await self.store.call("patch", cid, {"media_records": list(media_records)})
                         await self.evidence.thread(atomic_write, path, content)
                         media.append(image)
                         if settings.ocr_enabled:
                             try:
-                                recognized = await self.ocr.recognize(path, settings)
-                                ocr_records.append({"file": file, **asdict(recognized)})
-                                if recognized.truncated:
+                                ocr_key = "ocr:" + fingerprint(
+                                    [
+                                        QUESTION_VERSION,
+                                        digest,
+                                        type(self.ocr).__module__,
+                                        type(self.ocr).__qualname__,
+                                        settings.ocr_timeout,
+                                        settings.advanced.max_text_chars,
+                                        settings.cache.hours,
+                                        settings.cache.max_entries,
+                                    ]
+                                )
+                                previous = (
+                                    await self.store.call("image_cache_get", ocr_key, self.clock())
+                                    if settings.cache.enabled
+                                    else None
+                                )
+                                if previous:
+                                    recognized = {
+                                        **previous["value"],
+                                        "elapsed_ms": 0,
+                                        "cached_from": previous["source_case"],
+                                    }
+                                    reuse["ocr_hits"] += 1
+                                else:
+                                    recognized = asdict(await self.ocr.recognize(path, settings))
+                                    if settings.cache.enabled and not recognized["truncated"]:
+                                        await self.store.call(
+                                            "image_cache_put",
+                                            ocr_key,
+                                            cid,
+                                            recognized,
+                                            self.clock(),
+                                            settings.cache.hours,
+                                            settings.cache.max_entries,
+                                        )
+                                ocr_records.append({"file": file, **recognized})
+                                if recognized["truncated"]:
                                     missing.append("图片文字超过审核上限，仅保留开头")
                             except GuardError as exc:
                                 missing.append(str(exc))
+                    except SkippedImage:
+                        ignored_media.append({"index": index + 1, "reason": "GIF或其他动态图免审"})
                     except GuardError as exc:
                         missing.append(str(exc))
+            await self.store.call("patch", cid, {"ignored_media": ignored_media, "cache_reuse": reuse})
             if not message["text"] and not media:
+                if ignored_media and not missing:
+                    await self.store.call(
+                        "finish",
+                        cid,
+                        "skipped",
+                        {
+                            "audit_path": "skipped_media",
+                            "reason": "仅包含GIF或其他动态图，按规则免审。",
+                            "notification_ready": False,
+                        },
+                        self.clock(),
+                    )
+                    self.journal.record("动态图消息免审", case=cid, images=len(ignored_media))
+                    return
                 await self.store.call("patch", cid, {"missing": list(dict.fromkeys(missing))})
                 raise Deferred("；".join(missing) or "图片未读取成功，没有可审核内容。")
             self.policy_for(case)
@@ -510,8 +596,44 @@ class Service:
                 missing.append("引用原文已撤回或未能提供给模型")
             ocr_texts = [row["text"] for row in ocr_records]
             current_matches, definitions = hints(message, context, settings.terms, ocr_texts)
-            state = model_state(message, policy, context, len(media), definitions, ocr_texts)
+            # Only standalone static pictures have reusable content-only decisions.
+            # Text, quotes, unsupported parts, generic rules and author continuations
+            # keep the normal contextual audit, never a cross-context cached verdict.
+            pure_image = (
+                settings.cache.enabled
+                and len(media) == 1
+                and len(message["images"]) == 1
+                and not message["text"]
+                and not message["reply"]
+                and not missing
+                and not any(check.key == "rules" for check in settings.checks)
+                and not any(hit.get("来源") for hit in definitions)
+            )
+            if pure_image:
+                context = []
+                current_matches, definitions = hints(message, context, settings.terms, ocr_texts)
+            target = {**message, "at": 0} if pure_image else message
+            state = model_state(target, policy, context, len(media), definitions, ocr_texts)
             request = OneJev.request(state, settings)
+            cache_key = (
+                "result:"
+                + fingerprint(
+                    [
+                        "image-cache-v1",
+                        QUESTION_VERSION,
+                        message["scope"],
+                        settings.base_url,
+                        fingerprint(settings.api_key),
+                        request,
+                        media_records[0]["source_sha256"],
+                        media_records[0]["sha256"],
+                        settings.cache.hours,
+                        settings.cache.max_entries,
+                    ]
+                )
+                if pure_image
+                else ""
+            )
             # Media bytes live in bounded JPEG files; the stored request retains placeholders.
             await self.store.call(
                 "patch",
@@ -523,12 +645,29 @@ class Service:
                     "keyword_matches": current_matches,
                     "context_used": len(context),
                     "context_trimmed": original_count - len(context),
+                    "audit_mode": "image_content" if pure_image else "contextual",
                 },
             )
-            result = await self.invoke_model(
-                case, settings, lambda: self.model.evaluate(state, settings, media)
+            previous = (
+                await self.store.call("image_cache_get", cache_key, self.clock()) if cache_key else None
             )
+            if previous:
+                result = replace(
+                    Result(**previous["value"]),
+                    input_tokens=0,
+                    output_tokens=0,
+                    elapsed_ms=0,
+                    cache_source=previous["source_case"],
+                )
+            else:
+                if self.clock() < self.model_cooldown:
+                    raise Deferred("模型服务处于故障冷却期，本次未完成审核。")
+                result = await self.invoke_model(
+                    case, settings, lambda: self.model.evaluate(state, settings, media)
+                )
             self.policy_for(case)
+            if result.cache_source:
+                await self.check_cache_origin({"data": {"cache_source": result.cache_source}})
             decision = decide(result, settings)
             if decision.flagged:
                 try:
@@ -549,7 +688,8 @@ class Service:
                 cid,
                 state,
                 {
-                    "audit_path": "detail",
+                    "audit_path": "image_cache" if result.cache_source else "detail",
+                    "cache_source": result.cache_source,
                     "scores": result.scores,
                     "notification_ready": decision.notify,
                     "actual_model": result.model,
@@ -573,8 +713,18 @@ class Service:
                 self.clock(),
                 flagged,
             )
+            if cache_key and not result.cache_source and not missing:
+                await self.store.call(
+                    "image_cache_put",
+                    cache_key,
+                    cid,
+                    asdict(result),
+                    self.clock(),
+                    settings.cache.hours,
+                    settings.cache.max_entries,
+                )
             self.journal.record(
-                "模型审核完成",
+                "图片审核缓存复用" if result.cache_source else "模型审核完成",
                 case=cid,
                 scores=result.scores,
                 model=result.model,
@@ -583,6 +733,7 @@ class Service:
                 output_tokens=result.output_tokens,
                 elapsed_ms=result.elapsed_ms,
                 harmful=flagged,
+                cache_source=result.cache_source,
             )
             self.action_wake.set()
             self.notify_wake.set()
@@ -603,7 +754,14 @@ class Service:
         settings, policy = self.policy_for(case)
         self.journal.check()
         message = case["data"]["message"]
-        if (case["id"] in self.cancelled_cases and not manual) or message["scope"] in self.paused_scopes:
+        if (
+            not manual
+            and (
+                case["id"] in self.cancelled_cases
+                or case["data"].get("cache_source") in self.cancelled_cases
+                or case["data"].get("cache_invalidated")
+            )
+        ) or message["scope"] in self.paused_scopes:
             raise Deferred("记录标记为误判或这个群已暂停，取消操作。")
         if (message["scope"], message["mid"]) in self.invalidated:
             raise Deferred("这条消息已撤回，取消操作。")
@@ -636,6 +794,8 @@ class Service:
             current = await self.store.call("case", cid)
             if current is None or current["human"] == "误判" or current["state"] in ("recalled", "unknown"):
                 raise Deferred("记录状态已经变化，取消操作。")
+            if not manual:
+                await self.check_cache_origin(current)
             manager = await self.platform.member(
                 message["platform"], message["account"], message["group"], message["account"]
             )
@@ -801,6 +961,12 @@ class Service:
                     not policy.notify_private and not policy.notify_group
                 ) or latest.notify_users != settings.notify_users:
                     raise Deferred("通知配置已经变化。")
+                if any(
+                    item["id"] in self.cancelled_cases
+                    or item["data"].get("cache_source") in self.cancelled_cases
+                    for item in selected
+                ):
+                    raise Deferred("通知记录或缓存来源已被人工处理。")
 
             targets = (
                 [("private:" + user, "send_private_msg", {"user_id": user}) for user in settings.notify_users]
@@ -851,6 +1017,8 @@ class Service:
                             segments.append(previews[item["id"]])
 
                 async def prepare(params=params):
+                    for item in selected:
+                        await self.check_cache_origin(item)
                     if "group_id" in params:
                         await self.platform.member(
                             message["platform"], message["account"], params["group_id"], message["account"]
@@ -884,6 +1052,13 @@ class Service:
         except OSError as exc:
             raise GuardError("证据图片暂不可用；不会回退发送原文。") from exc
         return {"type": "image", "data": {"file": "base64://" + base64.b64encode(content).decode()}}
+
+    async def check_cache_origin(self, case):
+        source = case["data"].get("cache_source")
+        if source:
+            origin = await self.store.call("case", source)
+            if origin is None or origin["human"] or case["data"].get("cache_invalidated"):
+                raise Deferred("图片缓存来源已经过期或被人工处理，请重新复核。")
 
     async def send_review(self, case, actor, pid, account):
         settings = self.settings()
@@ -973,6 +1148,8 @@ class Service:
                 or case["data"].get("missing")
                 or case["human"]
                 or cid in self.cancelled_cases
+                or case["data"].get("cache_source") in self.cancelled_cases
+                or case["data"].get("cache_invalidated")
             ):
                 raise Deferred("本条记录不满足群内警告条件。")
             if message["scope"] in self.paused_scopes or case["state"] == "unknown":
@@ -996,6 +1173,7 @@ class Service:
             current = await self.store.call("case", cid)
             if current is None or current["human"] or cid in self.cancelled_cases:
                 raise Deferred("人工判定已变化，取消群内警告。")
+            await self.check_cache_origin(current)
             manager = await self.platform.member(
                 message["platform"], message["account"], message["group"], message["account"]
             )

@@ -11,7 +11,8 @@
       "notify_group": false,
       "admin_group": "",
       "warning_text": "请遵守群规。你刚才的发言可能违反了本群规定，请停止相关内容；如有异议，请联系管理员复核。",
-      "keyword_review": true
+      "keyword_review": true,
+      "skip_admins": true
     }
   ],
   "checks": [
@@ -55,8 +56,8 @@
   "ocr_enabled": true,
   "batch": {
     "enabled": true,
-    "max_messages": 8,
-    "wait_seconds": 20,
+    "max_messages": 16,
+    "wait_seconds": 8,
     "overlap_messages": 10,
     "threshold": 0.3,
     "spot_check_percent": 0
@@ -67,5 +68,10 @@
     "line_width": 6,
     "context_messages": 3,
     "font_path": ""
+  },
+  "cache": {
+    "enabled": true,
+    "hours": 24,
+    "max_entries": 256
   }
 }

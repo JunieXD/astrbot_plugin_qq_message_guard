@@ -46,71 +46,83 @@ def eligible(case, settings):
     return True
 
 
-def choose_work(rows, served, settings, now):
-    """Choose a ready group fairly; do not let an immature group block others."""
+def choose_work(rows, served, settings, now, estimates=None):
+    """Bounded priority plus deadline slack; images cannot indefinitely jump text."""
+    costs = {"screen": 25, "text": 25, "image": 40, "locate": 25, **(estimates or {})}
     groups = defaultdict(list)
     for case in rows:
         groups[case["scope"]].append(case)
     ready, deadlines = [], []
     for scope, cases in groups.items():
-        direct_cases = [
-            c
-            for c in cases
-            if not eligible(c, settings) or now - queued_at(c) >= settings.advanced.max_queue_seconds
-        ]
-        direct = (
-            min(
-                direct_cases,
-                key=lambda c: (
-                    now - queued_at(c) < settings.advanced.max_queue_seconds,
-                    -c["data"].get("batch", {}).get("priority", 1),
-                    queued_at(c),
-                    c["id"],
-                ),
-            )
-            if direct_cases
-            else None
-        )
-        if direct is not None:
-            # Do not make a risk-word/image message wait behind normal chatter.
-            batch = direct["data"].get("batch", {})
-            if batch.get("phase") == "locate":
-                ready.append(
-                    (
-                        scope,
-                        [
-                            c
-                            for c in cases
-                            if c["data"].get("batch", {}).get("phase") == "locate"
-                            and c["data"]["batch"]["screening_ids"][0] == batch["screening_ids"][0]
-                            and c["settings_revision"] == direct["settings_revision"]
-                        ],
-                    )
-                )
-            else:
-                ready.append((scope, [direct]))
+        overdue = [c for c in cases if now - queued_at(c) > settings.advanced.max_queue_seconds]
+        if overdue:
+            ready.append((scope, [min(overdue, key=lambda c: (queued_at(c), c["id"]))], float("-inf")))
             continue
-        first, selected, chars = cases[0], [], 0
+        candidates, ordinary = [], []
         for case in cases:
+            if eligible(case, settings):
+                ordinary.append(case)
+                continue
+            batch = case["data"].get("batch", {})
+            if batch.get("phase") == "locate":
+                selected = [
+                    c
+                    for c in cases
+                    if c["data"].get("batch", {}).get("phase") == "locate"
+                    and c["data"]["batch"]["screening_ids"][0] == batch["screening_ids"][0]
+                    and c["settings_revision"] == case["settings_revision"]
+                ]
+                kind = "locate"
+            else:
+                selected = [case]
+                kind = "image" if case["data"]["message"]["images"] else "text"
+            priority = batch.get("priority", 1 if case["data"].get("keyword_matches") else 0)
+            candidates.append((selected, kind, min(1, max(0, priority))))
+        if ordinary:
+            first, selected, chars = ordinary[0], [], 0
+            for case in ordinary:
+                if (
+                    case["settings_revision"] != first["settings_revision"]
+                    or case["data"]["policy_revision"] != first["data"]["policy_revision"]
+                    or case["data"]["binding"] != first["data"]["binding"]
+                    or len(selected) >= settings.batch.max_messages
+                    or chars + len(case["data"]["message"]["text"]) > MAX_TARGET_CHARS
+                ):
+                    break
+                selected.append(case)
+                chars += len(case["data"]["message"]["text"])
+            deadline = queued_at(first) + min(
+                settings.batch.wait_seconds, max(0, settings.advanced.max_queue_seconds - 1)
+            )
             if (
-                case["settings_revision"] != first["settings_revision"]
-                or case["data"]["policy_revision"] != first["data"]["policy_revision"]
-                or case["data"]["binding"] != first["data"]["binding"]
-                or len(selected) >= settings.batch.max_messages
-                or chars + len(case["data"]["message"]["text"]) > MAX_TARGET_CHARS
+                len(selected) >= settings.batch.max_messages
+                or len(selected) < len(ordinary)
+                or now >= deadline
             ):
-                break
-            selected.append(case)
-            chars += len(case["data"]["message"]["text"])
-        deadline = queued_at(first) + min(
-            settings.batch.wait_seconds, max(0, settings.advanced.max_queue_seconds - 1)
-        )
-        if len(selected) >= settings.batch.max_messages or len(selected) < len(cases) or now >= deadline:
-            ready.append((scope, selected))
-        else:
-            deadlines.append(deadline)
+                candidates.append((selected, "screen" if len(selected) > 1 else "text", 0))
+            else:
+                deadlines.append(deadline)
+
+        def slack(candidate):
+            selected, kind, priority = candidate
+            deadline = min(
+                min(
+                    queued_at(c) + settings.advanced.max_queue_seconds,
+                    c["data"]["message"]["at"] + settings.advanced.max_action_seconds,
+                )
+                for c in selected
+            )
+            return (
+                deadline - costs[kind] - min(10, settings.advanced.max_queue_seconds / 6) * priority,
+                min(c["created"] for c in selected),
+                selected[0]["id"],
+            )
+
+        if candidates:
+            chosen = min(candidates, key=slack)
+            ready.append((scope, chosen[0], slack(chosen)[0]))
     if ready:
-        _, chosen = min(ready, key=lambda x: (served.get(x[0], 0), x[1][0]["created"], x[1][0]["id"]))
+        _, chosen, _ = min(ready, key=lambda item: (served.get(item[0], 0), item[2], item[1][0]["id"]))
         return chosen, 0
     return [], max(0.01, min(deadlines) - now) if deadlines else 1
 

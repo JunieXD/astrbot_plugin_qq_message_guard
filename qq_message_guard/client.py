@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import math
 import time
 import warnings
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -14,7 +16,7 @@ import httpx
 from PIL import Image, ImageOps
 
 from .categories import CATEGORIES, CONTENT_SCOPE
-from .config import QUESTIONS, GuardError, InputRejected
+from .config import QUESTIONS, GuardError, InputRejected, SkippedImage
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,7 @@ class Result:
     output_tokens: int
     elapsed_ms: float
     raw_response: dict = field(default_factory=dict)
+    cache_source: int = 0
 
 
 class OneJev:
@@ -138,10 +141,15 @@ def compress_image(content, side):
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(io.BytesIO(content)) as image:
-                if image.width * image.height > 16_000_000 or getattr(image, "is_animated", False):
-                    raise GuardError("图片尺寸过大或为动态图，首版不做完整审核。")
-                image = ImageOps.exif_transpose(image)
+                if image.format == "GIF" or getattr(image, "is_animated", False):
+                    raise SkippedImage("GIF或其他动态图按规则跳过，不进行图片审核。")
+                if image.width * image.height > 64_000_000:
+                    raise GuardError("图片超过6400万像素，未进行图片审核。")
+                # JPEG draft downsamples during decoding; thumbnail before EXIF
+                # avoids copying a full-resolution 48MP phone photo.
+                image.draft("RGB", (side, side))
                 image.thumbnail((side, side))
+                image = ImageOps.exif_transpose(image)
                 if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
                     rgba = image.convert("RGBA")
                     rgb = Image.new("RGB", rgba.size, "white")
@@ -158,11 +166,25 @@ def compress_image(content, side):
 class Media:
     def __init__(self, transport=None):
         self.http = httpx.AsyncClient(transport=transport, trust_env=False, follow_redirects=False)
+        self.cache = OrderedDict()
+        self.cache_bytes = 0
+        self.cache_enabled = True
+        self.cache_hours = 24
+        self.last_cache_hit = False
+        self.last_source_digest = ""
 
     async def close(self):
+        self.cache.clear()
+        self.cache_bytes = 0
         await self.http.aclose()
 
     async def load(self, url, settings):
+        self.last_cache_hit = False
+        self.last_source_digest = ""
+        for key, (expires, cached) in list(self.cache.items()):
+            if not self.cache_enabled or expires <= time.monotonic():
+                self.cache.pop(key)
+                self.cache_bytes -= len(cached)
         try:
             return await asyncio.wait_for(self._load(url, settings), settings.image_timeout)
         except asyncio.TimeoutError as exc:
@@ -174,12 +196,29 @@ class Media:
             async with self.http.stream("GET", image_url(url), timeout=settings.image_timeout) as response:
                 if response.status_code != 200:
                     raise GuardError(f"图片下载返回HTTP {response.status_code}。")
-                pieces, size = [], 0
+                pieces, size, prefix = [], 0, bytearray()
                 async for block in response.aiter_bytes():
+                    prefix.extend(block[: 6 - len(prefix)])
+                    if bytes(prefix) in (b"GIF87a", b"GIF89a"):
+                        raise SkippedImage("GIF按规则跳过，不进行图片审核。")
                     size += len(block)
                     if size > limit:
                         raise GuardError("图片文件超过配置大小，本次未完成图片审核。")
                     pieces.append(block)
-            return await asyncio.to_thread(compress_image, b"".join(pieces), settings.image_side)
+            content = b"".join(pieces)
+            self.last_source_digest = hashlib.sha256(content).hexdigest()
+            key = (self.last_source_digest, settings.image_side)
+            if self.cache_enabled and key in self.cache:
+                self.last_cache_hit = True
+                self.cache.move_to_end(key)
+                return self.cache[key][1]
+            image = await asyncio.to_thread(compress_image, content, settings.image_side)
+            if self.cache_enabled:
+                self.cache[key] = (time.monotonic() + self.cache_hours * 3600, image)
+                self.cache_bytes += len(image)
+                while len(self.cache) > 128 or self.cache_bytes > 32 * 1024 * 1024:
+                    _, (_, old) = self.cache.popitem(last=False)
+                    self.cache_bytes -= len(old)
+            return image
         except httpx.HTTPError as exc:
             raise GuardError("图片下载失败，本次未完成图片审核。") from exc
