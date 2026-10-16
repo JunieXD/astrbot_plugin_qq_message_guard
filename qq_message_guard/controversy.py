@@ -99,6 +99,7 @@ class ControversyReminders:
             {
                 "group_id": message["group"],
                 "message": [
+                    {"type": "reply", "data": {"id": message["mid"]}},
                     {"type": "at", "data": {"qq": message["user"]}},
                     {"type": "text", "data": {"text": " " + text}},
                 ],

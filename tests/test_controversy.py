@@ -125,6 +125,33 @@ async def test_every_enabled_category_uses_its_own_short_message(gentle, categor
     assert text in actions(env, "send_group_msg")[0]["message"][-1]["data"]["text"]
 
 
+async def test_reminder_replies_to_triggering_message_and_mentions_its_author(gentle):
+    env = gentle
+    env.model.safety = "Safe"
+    original, _ = await env.speak(text="较早的另一条发言")
+    await env.process()
+    env.model.safety = "Controversial"
+    case = await warned(
+        env,
+        segments=[
+            {"type": "reply", "data": {"id": original["message_id"]}},
+            {"type": "text", "data": {"text": "触发本次审核的发言"}},
+        ],
+    )
+    message = case["data"]["message"]
+    sent = actions(env, "send_group_msg")[0]
+    assert sent["group_id"] == message["group"]
+    assert sent["message"] == [
+        {"type": "reply", "data": {"id": message["mid"]}},
+        {"type": "at", "data": {"qq": message["user"]}},
+        {
+            "type": "text",
+            "data": {"text": " " + dict(env.box.settings.groups[0].controversy.messages)["敏感话题"]},
+        },
+    ]
+    assert message["mid"] != str(original["message_id"])
+
+
 async def test_self_recall_after_mute_only_removes_reminder(gentle):
     env = gentle
     for _ in range(3):
