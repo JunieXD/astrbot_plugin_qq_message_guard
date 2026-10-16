@@ -64,9 +64,9 @@ async def test_notification_reconnect_before_transport_retries_only_unsent_targe
     original = env.store.operation
     submissions = 0
 
-    async def reconnect(oid, state, detail=""):
+    async def reconnect(oid, state, detail="", confirmed_at=None):
         nonlocal submissions
-        await original(oid, state, detail)
+        await original(oid, state, detail, confirmed_at)
         if state == "submitted":
             submissions += 1
             if submissions == 2:

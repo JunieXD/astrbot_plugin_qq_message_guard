@@ -7,6 +7,7 @@ import time
 import aiosqlite
 
 from .config import Deferred, GuardError
+from .muting import member_key, observation_key
 
 
 class Store:
@@ -64,6 +65,9 @@ class Store:
                 key TEXT PRIMARY KEY, source_case INTEGER NOT NULL, expires REAL NOT NULL,
                 accessed REAL NOT NULL, data TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS image_cache_expiry ON image_cache(expires);
+            CREATE TABLE IF NOT EXISTS mute_strikes (
+                case_id INTEGER PRIMARY KEY, scope TEXT NOT NULL, user TEXT NOT NULL, at REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS mute_strike_member ON mute_strikes(scope,user,at);
         """)
         columns = {row["name"] for row in await self._rows("PRAGMA table_info(calls)")}
         if "stage" not in columns:
@@ -73,7 +77,7 @@ class Store:
         history_columns = {row["name"] for row in await self._rows("PRAGMA table_info(history)")}
         if "sender_name" not in history_columns:
             await self.db.execute("ALTER TABLE history ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''")
-        await self.db.execute("PRAGMA user_version=5")
+        await self.db.execute("PRAGMA user_version=6")
         await self.call("recover", time.time())
 
     async def close(self):
@@ -399,6 +403,19 @@ class Store:
                 "UPDATE screenings SET flagged=1,updated=? WHERE id=?",
                 [(now, sid) for sid in data.get("batch", {}).get("screening_ids", [])],
             )
+        if human == "误判":
+            message = data["message"]
+            key = member_key(case["scope"], message["user"])
+            history = await self.get(key)
+            if history:
+                sources = history.get("source_ids", [])
+                linked = await self._rows(
+                    "SELECT id FROM cases WHERE json_extract(data,'$.cache_source')=?", (cid,)
+                )
+                if set(sources) & {cid, *(r["id"] for r in linked)}:
+                    # Do not release a QQ mute automatically; just remove its
+                    # invalid basis from future escalation.
+                    await self.put(key, {**history, "duration": 0, "source_ids": [], "invalidated_by": cid})
         await self.db.execute(
             "UPDATE cases SET human=?,updated=?,data=?,action_ready=0 WHERE id=?",
             (human, now, json.dumps(data, ensure_ascii=False), cid),
@@ -438,7 +455,13 @@ class Store:
             raise Deferred("该记录已有操作提交，不重复发送；请查看操作结果。")
         if await self.get("pause:" + account):
             raise Deferred("这个账号的审核操作已暂停，请检查状态。")
-        category = "kind='recall'" if kind == "recall" else "kind!='recall'"
+        category = (
+            "kind='recall'"
+            if kind == "recall"
+            else "kind='mute'"
+            if kind == "mute"
+            else "kind NOT IN ('recall','mute')"
+        )
         count = await self._row(
             "SELECT count(*) FROM operations WHERE account=? AND at>? AND state!='not_sent' AND " + category,
             (account, now - 3600),
@@ -497,8 +520,13 @@ class Store:
             await self.put(f"op-cooldowns:{oid}", keys)
         return oid
 
-    async def operation(self, oid, state, detail=""):
+    async def operation(self, oid, state, detail="", confirmed_at=None):
+        previous = await self._row("SELECT * FROM operations WHERE id=?", (oid,))
         await self.db.execute("UPDATE operations SET state=?,detail=? WHERE id=?", (state, detail[:500], oid))
+        if previous and state == "confirmed" and previous["state"] != "confirmed":
+            await self.confirmed_member_operation(
+                previous, confirmed_at if confirmed_at is not None else previous["at"]
+            )
         if state in ("not_sent", "failed", "confirmed", "unknown"):
             key = f"op-cooldowns:{oid}"
             reservations = await self.get(key, [])
@@ -507,6 +535,102 @@ class Store:
                     if await self.get(name) == until:
                         await self.db.execute("DELETE FROM state WHERE key=?", (name,))
             await self.db.execute("DELETE FROM state WHERE key=?", (key,))
+
+    async def confirmed_member_operation(self, operation, now):
+        if operation["kind"] not in ("recall", "mute") or operation["case_id"] is None:
+            return
+        case = await self.case(operation["case_id"])
+        if case is None:
+            return
+        data, message = case["data"], case["data"]["message"]
+        if operation["kind"] == "recall":
+            if (
+                data.get("recall_automatic")
+                and data.get("mute_policy", {}).get("enabled")
+                and case["flagged"]
+                and case["human"] != "误判"
+                and not data.get("cache_invalidated")
+            ):
+                await self.db.execute(
+                    "INSERT OR IGNORE INTO mute_strikes VALUES(?,?,?,?)",
+                    (case["id"], case["scope"], message["user"], now),
+                )
+            return
+        plan = data.get("mute_plan", {})
+        duration = plan.get("duration")
+        if type(duration) is not int or not 1 <= duration <= 2592000:
+            raise GuardError("禁言已提交但计划无效，请人工核对，不自动重试。")
+        sources = plan.get("source_ids", [])
+        valid, invalid = [], False
+        for cid in sources:
+            source = await self.case(cid)
+            if source:
+                valid.append(cid)
+                invalid |= source["human"] == "误判" or bool(source["data"].get("cache_invalidated"))
+        observed = await self.get(observation_key(case["scope"], message["user"]), {})
+        until = now + duration
+        event_at = 0
+        if observed.get("received_at", 0) >= operation["at"] and observed.get("event_at", 0) >= int(
+            operation["at"]
+        ):
+            until, event_at = observed["until"], observed["event_at"]
+        history = {
+            "duration": 0 if invalid else duration,
+            "until": until,
+            "muted_at": operation["at"],
+            "case_id": case["id"],
+            "source_ids": valid,
+            "observed_event": event_at,
+        }
+        await self.put(member_key(case["scope"], message["user"]), history)
+        await self.patch(
+            case["id"],
+            {
+                "mute_status": "confirmed",
+                "mute_seconds": duration,
+                "mute_until": until,
+                "mute_reason": plan["reason"],
+            },
+        )
+
+    async def mute_strikes(self, scope, user, since, now, message_after=0):
+        return [
+            dict(row)
+            for row in await self._rows(
+                "SELECT s.case_id,s.at FROM mute_strikes s JOIN cases c ON c.id=s.case_id"
+                " WHERE s.scope=? AND s.user=? AND s.at>=? AND s.at<=? AND c.human!='误判'"
+                " AND json_extract(c.data,'$.message.at')>=?"
+                " AND COALESCE(json_extract(c.data,'$.cache_invalidated'),0)!=1 ORDER BY s.at,s.case_id",
+                (scope, user, since, now, message_after),
+            )
+        ]
+
+    async def mute_notice(self, scope, user, stamp, duration, now):
+        key = member_key(scope, user)
+        history = await self.get(key)
+        observed = await self.get(observation_key(scope, user), {})
+        if stamp < max(int((history or {}).get("muted_at", 0)), observed.get("event_at", 0)):
+            return
+        until = stamp + duration
+        await self.put(observation_key(scope, user), {"event_at": stamp, "until": until, "received_at": now})
+        if history:
+            await self.put(key, {**history, "until": until, "observed_event": stamp})
+
+    async def mute_observe_member(self, scope, user, until, now, message_at):
+        key = member_key(scope, user)
+        history = await self.get(key)
+        if history is None:
+            return None
+        actual = history["until"]
+        if until > now:
+            actual = until
+        elif history["until"] > now and message_at >= int(history["muted_at"]):
+            actual = max(message_at, history["muted_at"])
+        elif 0 < until <= now and until >= history["muted_at"]:
+            actual = until
+        history = {**history, "until": actual}
+        await self.put(key, history)
+        return history
 
     async def operations(self, cid):
         return [dict(row) for row in await self._rows("SELECT * FROM operations WHERE case_id=?", (cid,))]
@@ -635,6 +759,15 @@ class Store:
             (now - harmful_days * 86400,),
         )
         await self.db.execute("DELETE FROM reads WHERE at<?", (now - 3600,))
+        await self.db.execute(
+            "DELETE FROM mute_strikes WHERE at<? OR case_id NOT IN (SELECT id FROM cases)", (now - 86400,)
+        )
+        for row in await self._rows(
+            "SELECT key,value FROM state WHERE key LIKE 'mute-member:%' OR key LIKE 'mute-observed:%'"
+        ):
+            value = json.loads(row["value"])
+            if value.get("until", 0) < now - 720 * 3600:
+                await self.db.execute("DELETE FROM state WHERE key=?", (row["key"],))
         for row in await self._rows(
             "SELECT key,value FROM state WHERE key LIKE 'warn:%' OR key LIKE 'notice-member:%'"
         ):

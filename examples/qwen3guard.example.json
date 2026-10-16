@@ -27,7 +27,16 @@
       "auto_recall": false,
       "warn_member": false,
       "notify_group": false,
-      "notify_private": false
+      "notify_private": false,
+      "mute": {
+        "enabled": false,
+        "window_minutes": 10,
+        "trigger_recalls": 4,
+        "initial_minutes": 60,
+        "repeat_hours": 48,
+        "multiplier": 2,
+        "max_minutes": 43200
+      }
     }
   ]
 }

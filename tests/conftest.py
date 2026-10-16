@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import io
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -50,7 +51,8 @@ class Journal:
 
 
 class Bot:
-    def __init__(self):
+    def __init__(self, clock=time.time):
+        self.clock, self.mutes = clock, {}
         self._wsr_api_clients = {A: object()}
         self.messages = {}
         self.reads, self.writes = [], []
@@ -61,7 +63,7 @@ class Bot:
         assert self_id == A
         if self.before:
             await self.before(action)
-        if action in ("delete_msg", "send_group_msg", "send_private_msg"):
+        if action in ("delete_msg", "set_group_ban", "send_group_msg", "send_private_msg"):
             self.writes.append((action, copy.deepcopy(params)))
             if self.after:
                 await self.after(action)
@@ -69,7 +71,15 @@ class Bot:
                 raise asyncio.TimeoutError()
             if self.fail == "business:" + action:
                 return {"status": "failed", "retcode": 123}
-            return None if action == "delete_msg" else {"message_id": 90000 + len(self.writes)}
+            if action == "set_group_ban":
+                self.mutes[(str(params["group_id"]), str(params["user_id"]))] = (
+                    self.clock() + params["duration"]
+                )
+            return (
+                None
+                if action in ("delete_msg", "set_group_ban")
+                else {"message_id": 90000 + len(self.writes)}
+            )
         self.reads.append((action, copy.deepcopy(params)))
         if action == "get_login_info":
             return {"user_id": self.login}
@@ -80,6 +90,7 @@ class Bot:
                 "user_id": params["user_id"],
                 "group_id": params["group_id"],
                 "role": self.role if params["user_id"] == A else self.target_role,
+                "shut_up_timestamp": self.mutes.get((str(params["group_id"]), str(params["user_id"])), 0),
             }
         if action == "get_msg":
             return self.messages.get(str(params["message_id"]))
@@ -137,7 +148,8 @@ class Ocr:
 
 @pytest.fixture
 async def env(tmp_path):
-    clock, bot, journal, model, media = Clock(), Bot(), Journal(), Model(), Media()
+    clock = Clock()
+    bot, journal, model, media = Bot(clock), Journal(), Model(), Media()
     ocr = Ocr()
     policy = Policy(G)
     box = SimpleNamespace(

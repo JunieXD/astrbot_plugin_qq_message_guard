@@ -131,10 +131,16 @@ class Platform:
         more = self.settings().advanced
         gap_range = (
             (more.recall_gap_min, more.recall_gap_max)
-            if kind == "recall"
+            if kind in ("recall", "mute")
             else (more.account_gap_min, more.account_gap_max)
         )
-        limit = more.recalls_per_hour if kind == "recall" else more.writes_per_hour
+        limit = (
+            more.recalls_per_hour
+            if kind == "recall"
+            else more.mutes_per_hour
+            if kind == "mute"
+            else more.writes_per_hour
+        )
         async with lock:
             await self.binding(pid, account)
             if guard is None and not await self.online(pid, account):
@@ -151,7 +157,7 @@ class Platform:
                     more = self.settings().advanced
                     if await self.store.call("get", "pause:" + key):
                         raise Deferred("账号操作已暂停，请核对后恢复。")
-                    if kind in ("recall", "warn") and await self.store.call(
+                    if kind in ("recall", "mute", "warn") and await self.store.call(
                         "get", "group-pause:" + message["scope"]
                     ):
                         raise Deferred("这个群的操作已暂停，请核对后恢复。")
@@ -202,14 +208,14 @@ class Platform:
                                 raise ApiFailure(action, result)
                             raise Uncertain("QQ接口未返回明确的操作结果，不会重发。")
                         result = result.get("data")
-                    if kind == "recall" and result is not None:
-                        raise Uncertain("撤回接口返回类型异常，未确认操作结果。")
-                    if kind != "recall":
+                    if kind in ("recall", "mute") and result is not None:
+                        raise Uncertain("撤回或禁言接口返回类型异常，未确认操作结果。")
+                    if kind not in ("recall", "mute"):
                         try:
                             message_id(result.get("message_id") if isinstance(result, dict) else None)
                         except GuardError as exc:
                             raise Uncertain("发送接口未返回有效消息ID，不会自动重发。") from exc
-                    await self.store.call("operation", oid, "confirmed")
+                    await self.store.call("operation", oid, "confirmed", "", self.clock())
                     # Pace from the response, so a slow API call cannot consume
                     # the entire interval before the next operation begins.
                     await self.store.call("put", "gap:" + key, self.clock() + gap)
@@ -251,10 +257,12 @@ class Platform:
             try:
                 options = (
                     dict(
-                        priority=0 if kind == "recall" else 1 if kind == "warn" else 2,
+                        priority=0 if kind == "recall" else 1 if kind in ("mute", "warn") else 2,
                         group=message["group"],
                         label="消息撤回"
                         if kind == "recall"
+                        else "重复违规禁言"
+                        if kind == "mute"
                         else "成员警告"
                         if kind == "warn"
                         else "管理提醒",

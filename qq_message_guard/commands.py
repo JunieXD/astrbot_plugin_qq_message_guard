@@ -65,6 +65,7 @@ class Commands:
                     f"警告{'开' if p.warn_member else '关'}、"
                     f"私聊通知{'开' if p.notify_private else '关'}、"
                     f"管理员群通知{'开' if p.notify_group else '关'}"
+                    f"、重复违规禁言{'开' if p.mute.enabled else '关'}"
                     for p in settings.groups
                     if p.enabled
                 )
@@ -111,7 +112,7 @@ class Commands:
                     f"管理员通知门槛：{notice_thresholds}；按类别分数处理，无额外意图门槛。\n"
                 )
             return (
-                f"群消息审核 v0.8.2\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.9.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
@@ -128,6 +129,7 @@ class Commands:
                 f"超过{settings.advanced.max_queue_seconds}秒记为未完整审核。\n"
                 f"本插件QQ读取额度：{settings.advanced.reads_per_hour}/小时；"
                 f"撤回额度：{settings.advanced.recalls_per_hour}/小时，"
+                f"禁言额度：{settings.advanced.mutes_per_hour}/小时，"
                 f"提醒额度：{settings.advanced.writes_per_hour}/小时。\n"
                 f"同成员提醒冷却：@{settings.advanced.warn_cooldown_minutes}分钟，"
                 f"管理员通知{notification_cooldown}。\n"

@@ -143,6 +143,54 @@
             "type": "bool",
             "default": true,
             "hint": "直接跳过QQ身份为群主或管理员的发言，不调用模型，不发审核通知；发言仍可作为其他消息的背景。"
+          },
+          "mute": {
+            "description": "重复违规禁言",
+            "type": "object",
+            "items": {
+              "enabled": {
+                "description": "启用重复违规禁言",
+                "type": "bool",
+                "default": false,
+                "hint": "只统计本插件自动撤回成功的消息；不统计管理员/成员自行撤回、仅通知、失败或结果不明。禁言在撤回后执行，不额外刷屏。"
+              },
+              "window_minutes": {
+                "description": "首次禁言：多少分钟内累计撤回",
+                "type": "int",
+                "default": 10,
+                "hint": "1～1440分钟，按群、机器人账号和成员分别计算滚动窗口。"
+              },
+              "trigger_recalls": {
+                "description": "首次禁言：累计撤回几次触发",
+                "type": "int",
+                "default": 4,
+                "hint": "默认4，即10分钟内超过3次，在第4次成功撤回时触发。1～100次。"
+              },
+              "initial_minutes": {
+                "description": "首次禁言时长（分钟）",
+                "type": "int",
+                "default": 60,
+                "hint": "默认60分钟；1～43200分钟。"
+              },
+              "repeat_hours": {
+                "description": "解禁后多久内复犯会加倍（小时）",
+                "type": "int",
+                "default": 48,
+                "hint": "窗口内再次自动撤回成功，即按上次时长乘下面的倍数，无需重新累计4次。超过窗口后重新累计；0表示关闭复犯加倍。最多720小时。"
+              },
+              "multiplier": {
+                "description": "复犯禁言时长倍数",
+                "type": "int",
+                "default": 2,
+                "hint": "默认2，即1小时、2小时、4小时、8小时……；1～10倍。"
+              },
+              "max_minutes": {
+                "description": "最长单次禁言（分钟）",
+                "type": "int",
+                "default": 43200,
+                "hint": "达到上限后不再增长；不能短于首次禁言，最高43200分钟（30天）。已有禁言不会被覆盖；不自动发送解禁请求。"
+              }
+            }
           }
         }
       }
@@ -504,6 +552,12 @@
         "type": "int",
         "default": 60,
         "hint": "0表示不按成员冷却，每条新风险均可再次通知，仍按来源群合并频率与发送额度控制；1～1440分钟。同一记录不会重复发送，重载后保留已发送记录。"
+      },
+      "mutes_per_hour": {
+        "description": "每账号每小时最多禁言次数",
+        "type": "int",
+        "default": 30,
+        "hint": "1～300次，独立于撤回和提醒额度；失败和结果不明的请求也计入。达到额度只保留记录，不自动重试旧处罚。"
       }
     }
   },

@@ -26,6 +26,7 @@ from .decisions import decide
 from .evidence import EvidenceArchive, atomic_write, evidence_path, original_text
 from .lexicon import hints, screen_output
 from .messages import Message, bounded_context, message_id, model_state
+from .muting import EscalatingMute
 from .notifications import is_notifiable, notification_text
 from .ocr import Ocr
 from .platform import ApiFailure
@@ -66,6 +67,7 @@ class Service:
         self.model_cooldown = 0
         self.last_maintenance = 0
         self.timings = {}
+        self.mutes = EscalatingMute(self)
 
     async def start(self):
         # Observe local websocket identities only; never query or backfill QQ history.
@@ -161,6 +163,7 @@ class Service:
                 "notification_enabled": policy.notify_private or policy.notify_group,
                 "rules": policy.rules,
                 "checks": [asdict(check) for check in settings.checks],
+                "mute_policy": asdict(policy.mute),
                 "question_version": QUESTION_VERSION,
                 "binding": stamp,
                 "keyword_matches": hints(item, context, settings.terms)[0],
@@ -203,7 +206,9 @@ class Service:
             return
         scope = f"{pid}:{account}:{group}"
         kind = raw.get("notice_type")
-        if kind == "group_recall":
+        if kind == "group_ban":
+            await self.mutes.observe_notice(raw, scope)
+        elif kind == "group_recall":
             try:
                 mid = message_id(raw.get("message_id"))
             except GuardError:
@@ -875,6 +880,7 @@ class Service:
 
         try:
             self.gate(case, manual)
+            await self.store.call("patch", cid, {"recall_automatic": not manual})
             await self.sleep(
                 random.uniform(settings.advanced.action_min_seconds, settings.advanced.action_max_seconds)
             )
@@ -890,6 +896,8 @@ class Service:
             await self.store.call(
                 "finish", cid, "recalled", {"reason": "撤回接口确认成功"}, self.clock(), True
             )
+            if not manual:
+                await self.mutes.after_recall(await self.store.call("case", cid))
             return "撤回接口确认成功。"
         except (Uncertain, ApiFailure) as exc:
             await self.store.call(
@@ -907,12 +915,19 @@ class Service:
         except asyncio.CancelledError:
             ops = await asyncio.shield(self.store.call("operations", cid))
             unknown = any(op["kind"] == "recall" and op["state"] == "unknown" for op in ops)
+            confirmed = any(op["kind"] == "recall" and op["state"] == "confirmed" for op in ops)
             await asyncio.shield(
                 self.store.call(
                     "finish",
                     cid,
-                    "unknown" if unknown else "review",
-                    {"reason": "插件停止，撤回结果不明" if unknown else "插件停止，未提交撤回"},
+                    "recalled" if confirmed else "unknown" if unknown else "review",
+                    {
+                        "reason": "插件停止，撤回已成功，后续处理未完成"
+                        if confirmed
+                        else "插件停止，撤回结果不明"
+                        if unknown
+                        else "插件停止，未提交撤回"
+                    },
                     self.clock(),
                     True,
                 )

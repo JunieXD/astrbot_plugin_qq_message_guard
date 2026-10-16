@@ -64,6 +64,18 @@ def notification_text(cases, policy, settings):
             handled = "未撤回（已提醒）"
         else:
             handled = "未撤回"
+        if data.get("mute_status") == "confirmed":
+            minutes = data["mute_seconds"] // 60
+            duration = (
+                f"{minutes // 1440}天"
+                if minutes % 1440 == 0
+                else f"{minutes // 60}小时"
+                if minutes % 60 == 0
+                else f"{minutes}分钟"
+            )
+            handled += f" · 禁言{duration}"
+        elif data.get("mute_status") == "unknown":
+            handled += " · 禁言结果待核对"
         local = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8)))
         stamp = f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}:{local.second:02d}"
         reference = f" · #{case['id']}" if settings.evidence.notify_images else ""

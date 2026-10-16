@@ -99,6 +99,17 @@ class Check:
 
 
 @dataclass(frozen=True)
+class MutePolicy:
+    enabled: bool = False
+    window_minutes: int = 10
+    trigger_recalls: int = 4
+    initial_minutes: int = 60
+    repeat_hours: int = 48
+    multiplier: int = 2
+    max_minutes: int = 43200
+
+
+@dataclass(frozen=True)
 class Policy:
     group_id: str
     enabled: bool = True
@@ -114,6 +125,7 @@ class Policy:
     keyword_review: bool = True
     display_name: str = ""
     skip_admins: bool = True
+    mute: MutePolicy = field(default_factory=MutePolicy)
 
     @property
     def revision(self):
@@ -142,6 +154,7 @@ class Advanced:
     account_gap_max: float = 5
     writes_per_hour: int = 30
     recalls_per_hour: int = 180
+    mutes_per_hour: int = 30
     reads_per_hour: int = 600
     notify_minutes: int = 1
     notify_cooldown_minutes: int = 60
@@ -327,6 +340,20 @@ def parse_settings(raw):
         users = item.get("exempt_users", [])
         if not isinstance(users, list) or len(users) > 100:
             raise GuardError("忽略名单最多100项。")
+        mute = item.get("mute", {})
+        if not isinstance(mute, dict):
+            raise GuardError("重复违规禁言配置应为对象。")
+        muting = MutePolicy(
+            enabled=switch(mute, "enabled", False),
+            window_minutes=integer(mute.get("window_minutes", 10), "撤回次数统计窗口分钟", 1, 1440),
+            trigger_recalls=integer(mute.get("trigger_recalls", 4), "触发禁言的撤回次数", 1, 100),
+            initial_minutes=integer(mute.get("initial_minutes", 60), "首次禁言分钟", 1, 43200),
+            repeat_hours=integer(mute.get("repeat_hours", 48), "解禁后复犯窗口小时", 0, 720),
+            multiplier=integer(mute.get("multiplier", 2), "复犯禁言倍数", 1, 10),
+            max_minutes=integer(mute.get("max_minutes", 43200), "最长禁言分钟", 1, 43200),
+        )
+        if muting.max_minutes < muting.initial_minutes:
+            raise GuardError("最长禁言时间不能小于首次禁言时间。")
         policies.append(
             Policy(
                 group_id=group_id,
@@ -343,6 +370,7 @@ def parse_settings(raw):
                 keyword_review=switch(item, "keyword_review", True),
                 display_name=display_name.strip(),
                 skip_admins=switch(item, "skip_admins", True),
+                mute=muting,
             )
         )
     if len({p.group_id for p in policies}) != len(policies):
@@ -382,6 +410,7 @@ def parse_settings(raw):
         "max_action_seconds": (10, 600),
         "writes_per_hour": (1, 300),
         "recalls_per_hour": (1, 1000),
+        "mutes_per_hour": (1, 300),
         "reads_per_hour": (30, 3600),
         "notify_minutes": (1, 1440),
         "notify_cooldown_minutes": (0, 1440),
