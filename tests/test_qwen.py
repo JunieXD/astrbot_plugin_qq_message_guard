@@ -74,6 +74,36 @@ def test_controversial_automatic_actions_require_explicit_switch():
         parse_settings({"qwen": {"include_controversial": False, "act_on_controversial": True}})
 
 
+@pytest.mark.parametrize("automatic_enabled", [False, True])
+def test_local_only_controversial_category_never_notifies_or_acts(automatic_enabled):
+    r = Result("qwen", {}, 0, 0, 0, safety="Controversial", categories=("Unethical Acts",))
+    decision = decide(r, settings(qwen=Qwen(act_on_controversial=automatic_enabled)))
+    assert decision.flagged and "本地记录" in decision.reason
+    assert not decision.notify and not decision.recall and not decision.warn
+
+
+def test_local_only_rule_does_not_suppress_unsafe_or_other_controversial_categories():
+    r = Result("qwen", {}, 0, 0, 0, safety="Unsafe", categories=("Unethical Acts",))
+    decision = decide(r, settings())
+    assert decision.notify and decision.recall and decision.warn
+    r = replace(r, safety="Controversial", categories=("Unethical Acts", "Politically Sensitive Topics"))
+    decision = decide(r, settings())
+    assert decision.notify and not decision.recall and not decision.warn
+
+
+def test_local_only_categories_are_configurable_and_validated():
+    cfg = parse_settings({"backend": "qwen3guard"})
+    assert cfg.qwen.controversial_local_only == ("不当行为",)
+    r = Result("qwen", {}, 0, 0, 0, safety="Controversial", categories=("Unethical Acts",))
+    cfg = replace(cfg, qwen=replace(cfg.qwen, controversial_local_only=()))
+    assert decide(r, cfg).notify
+    assert cfg.revision != parse_settings({"backend": "qwen3guard"}).revision
+    for names in (None, ["Unknown"], ["不当行为", "不当行为"]):
+        with pytest.raises(GuardError):
+            parse_settings({"qwen": {"controversial_local_only": names}})
+    assert parse_settings({"qwen": {"controversial_local_only": []}}).qwen.controversial_local_only == ()
+
+
 def test_qwen_configuration():
     cfg = parse_settings({"backend": "qwen3guard"})
     assert cfg.model == "Qwen3Guard-Gen-4B-Q4_K_M"
@@ -239,6 +269,47 @@ async def test_controversial_only_notifies_even_when_group_auto_actions_are_enab
         assert env.bot.writes[0][1]["group_id"] == "123456"
         text = env.bot.writes[0][1]["message"][0]["data"]["text"]
         assert "有争议" in text and "未撤回" in text
+    finally:
+        await env.s.model.close()
+
+
+async def test_unethical_controversial_is_preserved_locally_without_alerts_or_actions(env):
+    env.configure(auto_recall=True, warn_member=True, notify_group=True, admin_group="123456")
+    use_qwen(env, "Safety: Controversial\nCategories: Unethical Acts")
+    try:
+        await env.speak("素质极差")
+        case = await env.process()
+        assert case["state"] == "review" and case["flagged"]
+        assert case["data"]["classification"]["matched"] == ["Unethical Acts"]
+        assert case["data"]["classification"]["actionable"] == []
+        assert (
+            case["data"]["audit_response"]["content"] == "Safety: Controversial\nCategories: Unethical Acts"
+        )
+        assert "本地记录" in case["data"]["reason"]
+        assert not case["data"]["recall_ready"] and not case["data"]["warn_ready"]
+        assert not case["data"]["notification_ready"] and not case["data"]["actions_pending"]
+        assert (env.path / "evidence" / f"{case['id']}-source.json").exists()
+        assert await env.store.call("next_recall") is None
+        assert not await env.store.call("alerts", env.box.settings.revision)
+        await env.s.send_alerts()
+        assert not env.bot.writes
+    finally:
+        await env.s.model.close()
+
+
+async def test_local_only_hit_does_not_hide_other_risk_or_appear_as_notification_reason(env):
+    env.configure(notify_group=True, admin_group="123456")
+    use_qwen(env, "Safety: Controversial\nCategories: Unethical Acts, Politically Sensitive Topics")
+    try:
+        await env.speak()
+        case = await env.process()
+        assert case["data"]["notification_ready"]
+        assert case["data"]["classification"]["actionable"] == ["Politically Sensitive Topics"]
+        assert "不当行为" in classification_text(case["data"])
+        await env.s.send_alerts()
+        assert len(env.bot.writes) == 1
+        text = env.bot.writes[0][1]["message"][0]["data"]["text"]
+        assert "敏感话题" in text and "不当行为" not in text
     finally:
         await env.s.model.close()
 

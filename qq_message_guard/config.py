@@ -184,6 +184,7 @@ class Qwen:
     categories: tuple[str, ...] = QWEN_DEFAULT_NAMES
     include_controversial: bool = True
     act_on_controversial: bool = False
+    controversial_local_only: tuple[str, ...] = ("不当行为",)
 
 
 @dataclass(frozen=True)
@@ -234,6 +235,17 @@ class Settings:
         )
 
 
+def qwen_category_names(value, label, *, allow_empty=False):
+    if (
+        not isinstance(value, list)
+        or (not value and not allow_empty)
+        or any(not isinstance(name, str) or name not in QWEN_CATEGORIES.values() for name in value)
+        or len(set(value)) != len(value)
+    ):
+        raise GuardError(f"{label}请从列出的原生类别中选择，不可重复。")
+    return tuple(value)
+
+
 def parse_settings(raw):
     if not isinstance(raw, dict):
         raise GuardError("插件配置应为对象。")
@@ -243,18 +255,13 @@ def parse_settings(raw):
     qwen = raw.get("qwen", {})
     if not isinstance(qwen, dict):
         raise GuardError("Qwen3Guard配置应为对象。")
-    qwen_names = qwen.get("categories", list(QWEN_DEFAULT_NAMES))
-    if (
-        not isinstance(qwen_names, list)
-        or not qwen_names
-        or any(not isinstance(name, str) or name not in QWEN_CATEGORIES.values() for name in qwen_names)
-        or len(set(qwen_names)) != len(qwen_names)
-    ):
-        raise GuardError("Qwen3Guard审核类别请从列出的原生类别中选择，不可重复。")
     qwen_settings = Qwen(
-        tuple(qwen_names),
+        qwen_category_names(qwen.get("categories", list(QWEN_DEFAULT_NAMES)), "Qwen3Guard审核类别"),
         switch(qwen, "include_controversial", True),
         switch(qwen, "act_on_controversial", False),
+        qwen_category_names(
+            qwen.get("controversial_local_only", ["不当行为"]), "有争议时只留本地的类别", allow_empty=True
+        ),
     )
     if qwen_settings.act_on_controversial and not qwen_settings.include_controversial:
         raise GuardError("有争议内容的自动操作需要先开启有争议审核。")

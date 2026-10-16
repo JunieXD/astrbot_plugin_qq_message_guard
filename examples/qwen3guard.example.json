@@ -12,7 +12,10 @@
       "色情"
     ],
     "include_controversial": true,
-    "act_on_controversial": false
+    "act_on_controversial": false,
+    "controversial_local_only": [
+      "不当行为"
+    ]
   },
   "images_enabled": false,
   "ocr_enabled": false,

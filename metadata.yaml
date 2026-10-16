@@ -1,7 +1,7 @@
 name: astrbot_plugin_qq_message_guard
 desc: 本地 Qwen3Guard 或 OneJev 审核 QQ 发言，支持 OCR、缓存、管理员免审、审核记录和撤回。
 help: 添加群并开启插件，先关闭所有操作开关观察结果。机器人管理员私聊 /消息审核 查看帮助。
-version: v0.8.1
+version: v0.8.2
 author: JunieXD
 repo: https://github.com/JunieXD/astrbot_plugin_qq_message_guard
 display_name: QQ 群消息审核

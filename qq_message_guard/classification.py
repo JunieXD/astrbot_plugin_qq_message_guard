@@ -23,9 +23,20 @@ def matched_categories(result, settings):
     return tuple(c for c in result.categories if QWEN_CATEGORIES[c] in enabled)
 
 
-def classification_text(data):
+def actionable_categories(result, settings):
+    """Local-only controversial hits must not hide other actionable categories."""
+    matched = matched_categories(result, settings)
+    if result.safety != "Controversial":
+        return matched
+    local_only = set(settings.qwen.controversial_local_only)
+    return tuple(c for c in matched if QWEN_CATEGORIES[c] not in local_only)
+
+
+def classification_text(data, *, actionable=False):
     value = data.get("classification", {})
     categories = value.get("matched") or value.get("categories") or ()
+    if actionable and "actionable" in value:
+        categories = value["actionable"]
     names = "、".join(QWEN_CATEGORIES.get(c, c) for c in categories)
     label = SAFETY_NAMES.get(value.get("safety"), "结果未知")
     return f"{names} · {label}" if names else label

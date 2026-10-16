@@ -11,7 +11,7 @@ from dataclasses import asdict, replace
 
 from .batching import build_state, location_request, queued_at, screen_request, spot_check
 from .categories import CATEGORIES
-from .classification import QWEN_CATEGORIES, matched_categories
+from .classification import QWEN_CATEGORIES, actionable_categories, matched_categories
 from .client import OneJev, Result
 from .config import (
     QUESTION_VERSION,
@@ -741,6 +741,7 @@ class Service:
                         "safety": result.safety,
                         "categories": list(result.categories),
                         "matched": list(matched_categories(result, settings)),
+                        "actionable": list(actionable_categories(result, settings)),
                     }
                     if qwen
                     else None,
@@ -1262,7 +1263,12 @@ class Service:
                 await self.platform.locate(message)
 
         hits = (
-            "、".join(QWEN_CATEGORIES[c] for c in case["data"].get("classification", {}).get("matched", []))
+            "、".join(
+                QWEN_CATEGORIES[c]
+                for c in case["data"]
+                .get("classification", {})
+                .get("actionable", case["data"].get("classification", {}).get("matched", []))
+            )
             if settings.backend == "qwen3guard"
             else "、".join(
                 c.name

@@ -55,7 +55,7 @@ def notification_text(cases, policy, settings):
             or "可能违反群规"
         )
         if data.get("classification"):
-            evidence = classification_text(data)
+            evidence = classification_text(data, actionable=True)
         if case["state"] == "recalled":
             handled = "已撤回"
         elif case["state"] in ("unknown", "failed"):

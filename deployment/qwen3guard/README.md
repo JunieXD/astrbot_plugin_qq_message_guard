@@ -25,7 +25,8 @@ c81d88da8e1f90a80d1b892a29fb3deac592fc5f321b35fc964a568398c1dbfb
   "qwen": {
     "categories": ["敏感话题", "暴力内容", "不当行为", "违法行为", "色情"],
     "include_controversial": true,
-    "act_on_controversial": false
+    "act_on_controversial": false,
+    "controversial_local_only": ["不当行为"]
   }
 }
 ```
