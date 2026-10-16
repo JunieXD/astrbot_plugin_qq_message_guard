@@ -1,0 +1,23 @@
+{
+  "enabled": false,
+  "backend": "qwen3guard",
+  "base_url": "http://127.0.0.1:8001",
+  "model": "Qwen3Guard-Gen-4B-Q4_K_M",
+  "qwen": {
+    "categories": ["敏感话题", "暴力内容", "不当行为", "违法行为", "色情"],
+    "include_controversial": true
+  },
+  "images_enabled": false,
+  "ocr_enabled": false,
+  "groups": [
+    {
+      "group_id": "123456789",
+      "enabled": true,
+      "skip_admins": true,
+      "auto_recall": false,
+      "warn_member": false,
+      "notify_group": false,
+      "notify_private": false
+    }
+  ]
+}

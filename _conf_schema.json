@@ -1,4 +1,38 @@
 {
+  "backend": {
+    "description": "审核服务",
+    "type": "string",
+    "default": "onejev",
+    "options": [
+      "onejev",
+      "qwen3guard"
+    ],
+    "hint": "Qwen3Guard逐条审核当前文字及图片OCR；OneJev保留旧版批量与上下文能力。切换后请同时修改地址和模型名。"
+  },
+  "qwen": {
+    "description": "Qwen3Guard审核设置",
+    "type": "object",
+    "items": {
+      "categories": {
+        "description": "需要处理的模型类别",
+        "type": "list",
+        "default": [
+          "敏感话题",
+          "暴力内容",
+          "不当行为",
+          "违法行为",
+          "色情"
+        ],
+        "hint": "仅Qwen3Guard生效。可选：敏感话题、暴力内容、不当行为、违法行为、色情、隐私信息、自伤内容、版权侵权、越狱指令。不当行为是模型原生的宽泛类别，包含但不限于仇恨；暴力内容也不局限于现实威胁。"
+      },
+      "include_controversial": {
+        "description": "有争议也按命中处理",
+        "type": "bool",
+        "default": true,
+        "hint": "开启：有争议和不安全均按群内操作开关处理；关闭：仅不安全。模型不提供百分比，旧版的分数门槛对Qwen3Guard无效。"
+      }
+    }
+  },
   "enabled": {
     "description": "启用群消息审核",
     "type": "bool",
@@ -101,7 +135,7 @@
     }
   },
   "checks": {
-    "description": "审核项目与门槛",
+    "description": "OneJev审核项目与分数门槛",
     "type": "template_list",
     "default": [
       {
@@ -145,7 +179,7 @@
         "notify_at": 0.8
       }
     ],
-    "hint": "默认5项内容分类；一次请求分别评分，没有额外意图识别。色情包含未成年人性化；可按群规添加其他项目，每项独立设置门槛。",
+    "hint": "仅OneJev生效。Qwen3Guard请调整上方的原生类别与“有争议也按命中处理”。",
     "templates": {
       "check": {
         "name": "添加审核项目",
@@ -207,9 +241,9 @@
     }
   },
   "batch": {
-    "description": "批量初筛（减少普通聊天审核调用）",
+    "description": "OneJev批量初筛",
     "type": "object",
-    "hint": "只初筛完整文字；图片、词库候选等直接细审。初筛不会触发处罚。",
+    "hint": "仅OneJev生效。Qwen3Guard直接逐条分类，不等待批量、不做定位、不进行旧版初筛。",
     "items": {
       "enabled": {
         "description": "启用批量初筛",
@@ -253,13 +287,13 @@
     "description": "本地OneJev服务地址",
     "type": "string",
     "default": "http://127.0.0.1:8000",
-    "hint": "填写服务根地址；插件自动加 /v1/systemone。不要填写 /v1。"
+    "hint": "服务根地址。Qwen3Guard本机默认http://127.0.0.1:8001，调用/completion；OneJev默认8000，调用/v1/systemone。不要附加接口路径。"
   },
   "model": {
     "description": "模型名称",
     "type": "string",
     "default": "jev-latest",
-    "hint": "可留jev-latest；当前本机实际模型为OneJev-4B.Q4_K_M。"
+    "hint": "Qwen3Guard本机填Qwen3Guard-Gen-4B-Q4_K_M，必须与服务别名一致；OneJev默认jev-latest。更换权重时也更新模型名以隔离缓存。"
   },
   "api_key": {
     "description": "服务API Key",
@@ -268,10 +302,10 @@
     "hint": "本机服务无密钥，留空。连接其他受保护服务时才填写。"
   },
   "images_enabled": {
-    "description": "审核图片",
+    "description": "审核消息中的图片",
     "type": "bool",
     "default": true,
-    "hint": "文字和当前消息图片一起提交。语音、视频、文件和转发首版不展开。"
+    "hint": "关闭后不下载图片、不运行OCR；纯图片消息按配置跳过，图文混合只审核文字。"
   },
   "notify_users": {
     "description": "私聊通知接收人QQ",
@@ -299,7 +333,7 @@
         "description": "附带几条群内背景消息",
         "type": "int",
         "default": 24,
-        "hint": "0～64条，默认24；按收到的先后顺序，不按时间过滤，不调用QQ历史接口。"
+        "hint": "仅OneJev。Qwen3Guard不读取群聊前文或引用原文，只审核当前发言。"
       },
       "max_text_chars": {
         "description": "每条最多审核多少字",
@@ -419,7 +453,7 @@
         "description": "额外附带该成员几条前文",
         "type": "int",
         "default": 6,
-        "hint": "0～16条，默认6；与群背景去重，帮助理解承接句。仅从本地缓存中选择。"
+        "hint": "仅OneJev。Qwen3Guard不读取该成员的前文。"
       },
       "context_cache_messages": {
         "description": "每群本地背景缓存条数",
@@ -469,7 +503,7 @@
     "description": "本机提取图片文字",
     "type": "bool",
     "default": true,
-    "hint": "文字与原图一起审核。Windows用自带中文OCR；Linux/macOS需安装Tesseract中文及英文语言包。失败标记覆盖不完整，不自动操作。关闭后仅由模型识图。"
+    "hint": "Windows使用本机中文OCR。Qwen3Guard只审核图片识别出的文字，不支持画面理解；无可识别文字、OCR关闭或失败均记为未完整审核，不自动处罚。OneJev可同时审核原图。"
   },
   "ocr_timeout": {
     "description": "图片文字提取超时秒数",

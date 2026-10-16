@@ -3,6 +3,7 @@
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
+from .classification import classification_text
 from .config import QUESTIONS
 from .lexicon import matches
 
@@ -10,7 +11,7 @@ from .lexicon import matches
 def is_notifiable(case):
     return bool(
         case["flagged"]
-        and case["data"].get("scores")
+        and (case["data"].get("scores") or case["data"].get("classification"))
         and case["data"].get("notification_ready")
         and not case["human"]
         and not case["data"].get("actions_pending")
@@ -53,6 +54,8 @@ def notification_text(cases, policy, settings):
             )
             or "可能违反群规"
         )
+        if data.get("classification"):
+            evidence = classification_text(data)
         if case["state"] == "recalled":
             handled = "已撤回"
         elif case["state"] in ("unknown", "failed"):

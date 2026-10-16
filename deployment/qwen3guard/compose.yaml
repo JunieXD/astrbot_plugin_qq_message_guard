@@ -1,0 +1,58 @@
+name: qwen3guard-local
+services:
+  guard:
+    build:
+      context: .
+      args:
+        LLAMA_IMAGE: ${LLAMA_IMAGE:-onejev-local:cpu}
+    image: qwen3guard-local:cpu
+    container_name: qwen3guard-4b
+    command:
+      - -m
+      - /models/Qwen3Guard-Gen-4B.Q4_K_M.gguf
+      - --alias
+      - Qwen3Guard-Gen-4B-Q4_K_M
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -c
+      - "16384"
+      - -np
+      - "1"
+      - -t
+      - "4"
+      - -tb
+      - "4"
+      - -ngl
+      - "0"
+      - --cache-ram
+      - "64"
+      - --no-context-shift
+      - --metrics
+      - --no-webui
+      - --poll
+      - "0"
+    ports:
+      - "127.0.0.1:8001:8080"
+    volumes:
+      - ./models:/models:ro
+    cpus: 4
+    mem_limit: 8g
+    pids_limit: 256
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - /opt/qev/bin/python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3

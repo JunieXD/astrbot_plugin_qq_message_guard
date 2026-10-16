@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from urllib.parse import urlsplit
 
 from .categories import CATEGORIES, CATEGORY_ALIASES, DEFAULT_NAMES, QUESTIONS
+from .classification import QWEN_CATEGORIES, QWEN_DEFAULT_NAMES
 
 
 class GuardError(Exception):
@@ -37,7 +38,7 @@ DEFAULT_RULES = (
     "禁止色情资源、露骨性内容及未成年人性化表达、诈骗和违法招揽、"
     "现实暴力威胁与群体仇恨。按当前内容和实际引用判断，其他人的背景消息仅帮助消歧。"
 )
-QUESTION_VERSION = "qq-message-guard-content-v6"
+QUESTION_VERSION = "qq-message-guard-content-v7-qwen-native"
 
 
 def fingerprint(value):
@@ -179,6 +180,12 @@ class Cache:
 
 
 @dataclass(frozen=True)
+class Qwen:
+    categories: tuple[str, ...] = QWEN_DEFAULT_NAMES
+    include_controversial: bool = True
+
+
+@dataclass(frozen=True)
 class Settings:
     enabled: bool = False
     groups: tuple[Policy, ...] = ()
@@ -197,6 +204,16 @@ class Settings:
     batch: Batch = field(default_factory=Batch)
     evidence: Evidence = field(default_factory=Evidence)
     cache: Cache = field(default_factory=Cache)
+    backend: str = "onejev"
+    qwen: Qwen = field(default_factory=Qwen)
+
+    @property
+    def batching_enabled(self):
+        return self.backend == "onejev" and self.batch.enabled
+
+    @property
+    def cooldown_key(self):
+        return "model-cooldown:" + fingerprint([self.backend, self.base_url, self.model, self.api_key])
 
     def group(self, gid):
         return next((p for p in self.groups if p.group_id == gid), None)
@@ -219,6 +236,21 @@ class Settings:
 def parse_settings(raw):
     if not isinstance(raw, dict):
         raise GuardError("插件配置应为对象。")
+    backend = raw.get("backend", "onejev")
+    if backend not in ("onejev", "qwen3guard"):
+        raise GuardError("审核服务请选择onejev或qwen3guard。")
+    qwen = raw.get("qwen", {})
+    if not isinstance(qwen, dict):
+        raise GuardError("Qwen3Guard配置应为对象。")
+    qwen_names = qwen.get("categories", list(QWEN_DEFAULT_NAMES))
+    if (
+        not isinstance(qwen_names, list)
+        or not qwen_names
+        or any(not isinstance(name, str) or name not in QWEN_CATEGORIES.values() for name in qwen_names)
+        or len(set(qwen_names)) != len(qwen_names)
+    ):
+        raise GuardError("Qwen3Guard审核类别请从列出的原生类别中选择，不可重复。")
+    qwen_settings = Qwen(tuple(qwen_names), switch(qwen, "include_controversial", True))
     cache = raw.get("cache", {})
     if not isinstance(cache, dict):
         raise GuardError("表情图片缓存配置应为对象。")
@@ -364,7 +396,7 @@ def parse_settings(raw):
         or values["recall_gap_max"] < values["recall_gap_min"]
     ):
         raise GuardError("最长操作等待不能小于最短等待。")
-    url = raw.get("base_url", "http://127.0.0.1:8000")
+    url = raw.get("base_url", "http://127.0.0.1:8001" if backend == "qwen3guard" else "http://127.0.0.1:8000")
     if not isinstance(url, str):
         raise GuardError("模型服务地址应为HTTP地址。")
     try:
@@ -381,7 +413,7 @@ def parse_settings(raw):
         or parts.fragment
     ):
         raise GuardError("模型地址不能包含用户名、密码、查询参数或片段。")
-    model = raw.get("model", "jev-latest")
+    model = raw.get("model", "Qwen3Guard-Gen-4B-Q4_K_M" if backend == "qwen3guard" else "jev-latest")
     key = raw.get("api_key", "")
     if not isinstance(model, str) or not 1 <= len(model.strip()) <= 200:
         raise GuardError("模型名称不正确。")
@@ -431,4 +463,6 @@ def parse_settings(raw):
         batch=batching,
         evidence=pictures,
         cache=caching,
+        backend=backend,
+        qwen=qwen_settings,
     )

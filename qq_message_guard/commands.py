@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from .classification import classification_text
 from .config import QUESTIONS, GuardError, integer, qq
 
 STATES = {
@@ -34,6 +35,8 @@ def lines(case):
     scores = data.get("scores", {})
     names = {v[0]: k for k, v in QUESTIONS.items()}
     score_text = "、".join(f"{names.get(k, k)} {v:.3f}" for k, v in scores.items())
+    if data.get("classification"):
+        score_text = classification_text(data)
     return (
         f"#{case['id']} 群{message['group']} QQ{message['user']}：{STATES.get(case['state'], case['state'])}"
         + (f"；{score_text}" if score_text else "")
@@ -68,8 +71,31 @@ class Commands:
                 or "未配置"
             )
             notice_thresholds = "、".join(f"{check.name} {check.notify_at:.2f}" for check in settings.checks)
+            if settings.backend == "qwen3guard":
+                image_status = (
+                    f"图片OCR{'开' if settings.ocr_enabled else '关'}，不识别画面。\n"
+                    if settings.images_enabled
+                    else "图片审核关闭，不下载图片、不运行OCR。\n"
+                )
+                model_status = (
+                    f"模型：{settings.model}，仅审核当前发言，不附带前文或引用原文。\n"
+                    f"逐条直接分类，不使用批量初筛；{image_status}"
+                    f"类别：{'、'.join(settings.qwen.categories)}；"
+                    f"处理{'有争议和不安全' if settings.qwen.include_controversial else '不安全'}，"
+                    "无百分比置信度，OneJev分数门槛不适用。\n"
+                )
+            else:
+                model_status = (
+                    f"批量初筛{'开' if settings.batching_enabled else '关'}：最多{settings.batch.max_messages}条、"
+                    f"最多等{settings.batch.wait_seconds}秒；门槛{settings.screen_threshold:.2f}，"
+                    f"抽查{settings.batch.spot_check_percent}%。\n"
+                    f"上下文：群内{settings.advanced.context_messages}条＋同作者"
+                    f"{settings.advanced.sender_context_messages}条，无时间过滤；"
+                    f"按内容分类，本机OCR{'开' if settings.ocr_enabled else '关'}。\n"
+                    f"管理员通知门槛：{notice_thresholds}；按类别分数处理，无额外意图门槛。\n"
+                )
             return (
-                f"群消息审核 v0.7.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.8.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
@@ -80,21 +106,15 @@ class Commands:
                 f"逐条细审{stages.get('detail', 0)}次；初筛结束{stats['screened_clear']}条、"
                 f"抽查{stats['spot_checks']}条。\n"
                 f"缓存复用：纯图片审核{stats['image_cache_hits']}条、OCR {stats['ocr_cache_hits']}次；"
-                f"GIF免审{states.get('skipped', 0)}条。\n"
-                f"批量初筛{'开' if settings.batch.enabled else '关'}：最多{settings.batch.max_messages}条、"
-                f"最多等{settings.batch.wait_seconds}秒；门槛{settings.screen_threshold:.2f}，"
-                f"抽查{settings.batch.spot_check_percent}%。\n"
+                f"按配置免审{states.get('skipped', 0)}条。\n"
+                f"{model_status}"
                 f"当前排队{stats['queue']['n']}条，最早已等{stats['queue']['oldest_seconds']:.0f}秒；"
                 f"超过{settings.advanced.max_queue_seconds}秒记为未完整审核。\n"
-                f"上下文：群内{settings.advanced.context_messages}条＋同作者"
-                f"{settings.advanced.sender_context_messages}条，无时间过滤；"
-                f"按内容分类，本机OCR{'开' if settings.ocr_enabled else '关'}。\n"
                 f"本插件QQ读取额度：{settings.advanced.reads_per_hour}/小时；"
                 f"撤回额度：{settings.advanced.recalls_per_hour}/小时，"
                 f"提醒额度：{settings.advanced.writes_per_hour}/小时。\n"
                 f"同成员提醒冷却：@{settings.advanced.warn_cooldown_minutes}分钟，"
                 f"管理员通知{settings.advanced.notify_cooldown_minutes}分钟。\n"
-                f"管理员通知门槛：{notice_thresholds}；按类别分数处理，无额外意图门槛。\n"
                 f"暂停：{'；'.join(stats['pauses'].values()) or '无'}\n"
                 f"模型故障冷却：{max(0, int(self.s.model_cooldown - self.s.clock()))}秒。\n"
                 f"操作节奏：{'接入共享队列' if self.s.platform.shared_guard() else '仅本插件'}。"
@@ -139,7 +159,7 @@ class Commands:
                 lines(case)
                 + f"\n时间：{stamp}\n模型：{data.get('actual_model', '未完成调用')}\n"
                 + batch_info
-                + f"说明：{data.get('reason') or '请结合群规人工判断，分数不代表现实违规概率。'}\n"
+                + f"说明：{data.get('reason') or '模型结果仅供群规管理判断。'}\n"
                 f"覆盖缺失：{'；'.join(data.get('missing', [])) or '无已知缺失'}\n"
                 f"操作：{'；'.join(op['kind'] + ':' + op['state'] for op in ops) or '无'}\n"
                 f"原文仅在本机审核记录和 evidence/{cid}-local.html 中查看。"

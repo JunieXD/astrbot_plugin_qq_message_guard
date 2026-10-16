@@ -11,6 +11,7 @@ from dataclasses import asdict, replace
 
 from .batching import build_state, location_request, queued_at, screen_request, spot_check
 from .categories import CATEGORIES
+from .classification import QWEN_CATEGORIES, matched_categories
 from .client import OneJev, Result
 from .config import (
     QUESTION_VERSION,
@@ -28,6 +29,7 @@ from .messages import Message, bounded_context, message_id, model_state
 from .notifications import is_notifiable, notification_text
 from .ocr import Ocr
 from .platform import ApiFailure
+from .qwen import QwenGuard
 
 
 class Service:
@@ -80,7 +82,7 @@ class Service:
                         except Deferred:
                             continue
                         self.connections[(str(instance.meta().id), str(account))] = (stamp, self.clock())
-        self.model_cooldown = await self.store.call("get", "model-cooldown", 0)
+        self.model_cooldown = await self.store.call("get", self.settings().cooldown_key, 0)
         self.tasks = {
             asyncio.create_task(self.worker()),
             asyncio.create_task(self.notifier()),
@@ -119,22 +121,26 @@ class Service:
                         "群主或管理员消息免审", group=message.group, user=message.user, mid=message.mid
                     )
                 return
-            context, quoted = await self.store.call(
-                "history_context",
-                message,
-                settings.advanced.context_messages,
-                settings.advanced.sender_context_messages,
-            )
+            if settings.backend == "qwen3guard":
+                context, quoted = [], False
+            else:
+                context, quoted = await self.store.call(
+                    "history_context",
+                    message,
+                    settings.advanced.context_messages,
+                    settings.advanced.sender_context_messages,
+                )
             if message.user in policy.exempt_users:
                 await self.store.call("remember", message, settings.advanced.context_cache_messages)
                 return
             missing = list(message.unsupported)
-            if message.reply and not quoted:
+            if not settings.images_enabled:
+                missing = [part for part in missing if part != "图片没有下载地址"]
+            if settings.backend == "onejev" and message.reply and not quoted:
                 missing.append("引用消息不在本地条数缓存中")
             item = message.data()
             item["scope"] = message.scope
-            if message.images and not settings.images_enabled:
-                missing.append("图片审核已关闭")
+            image_count = sum(segment["type"] == "image" for segment in raw["message"])
             stamp = None
             online_since = self.clock()
             try:
@@ -160,7 +166,8 @@ class Service:
                 "keyword_matches": hints(item, context, settings.terms)[0],
                 "keyword_review": policy.keyword_review,
                 "original_text": original_text(raw),
-                "original_image_count": sum(segment["type"] == "image" for segment in raw["message"]),
+                "original_image_count": image_count,
+                "image_audit_enabled": settings.images_enabled,
             }
             age = self.clock() - message.at
             initial, reason = "queued", ""
@@ -168,6 +175,8 @@ class Service:
                 initial, reason = "incomplete", "连接前的旧消息已跳过，只审核在线期间的新发言"
             elif age < -30 or age > settings.advanced.max_queue_seconds:
                 initial, reason = "incomplete", "消息时间过旧或异常，未进行实时审核"
+            elif not message.text and image_count and not settings.images_enabled and not missing:
+                initial, reason = "skipped", "图片审核已关闭，纯图片消息按配置跳过"
             elif not message.text and (not message.images or not settings.images_enabled):
                 initial, reason = "incomplete", "当前消息没有首版可审核的文字或图片"
             case = await self.store.call(
@@ -262,17 +271,17 @@ class Service:
         try:
             result = await call()
             self.model_cooldown = 0
-            await self.store.call("put", "model-cooldown", 0)
+            await self.store.call("put", settings.cooldown_key, 0)
             return result
         except asyncio.CancelledError:
             error = "插件停止中断了请求，服务端可能仍在计算"
-            await asyncio.shield(self.store.call("put", "model-cooldown", self.clock() + 60))
+            await asyncio.shield(self.store.call("put", settings.cooldown_key, self.clock() + 60))
             raise
         except GuardError as exc:
             error = str(exc)
             if not isinstance(exc, InputRejected):
                 self.model_cooldown = self.clock() + 60
-                await self.store.call("put", "model-cooldown", self.model_cooldown)
+                await self.store.call("put", settings.cooldown_key, self.model_cooldown)
             raise
         finally:
             if result is not None:
@@ -493,7 +502,11 @@ class Service:
             media = []
             media_records = []
             ocr_records = []
-            ignored_media = []
+            ignored_media = (
+                [{"index": i + 1, "reason": "图片审核已关闭"} for i in range(data["original_image_count"])]
+                if not settings.images_enabled
+                else []
+            )
             reuse = {"ocr_hits": 0, "decode_hits": 0}
             self.media.cache_enabled = settings.cache.enabled
             self.media.cache_hours = settings.cache.hours
@@ -587,14 +600,35 @@ class Service:
                 await self.store.call("patch", cid, {"missing": list(dict.fromkeys(missing))})
                 raise Deferred("；".join(missing) or "图片未读取成功，没有可审核内容。")
             self.policy_for(case)
-            context = [
-                row for row in data["context"] if (message["scope"], row["mid"]) not in self.invalidated
-            ]
+            qwen = settings.backend == "qwen3guard"
+            context = (
+                []
+                if qwen
+                else [
+                    row for row in data["context"] if (message["scope"], row["mid"]) not in self.invalidated
+                ]
+            )
             original_count = len(context)
             context = bounded_context(context, settings.advanced.context_chars)
-            if message["reply"] and not any(row.get("quoted") for row in context):
+            if not qwen and message["reply"] and not any(row.get("quoted") for row in context):
                 missing.append("引用原文已撤回或未能提供给模型")
             ocr_texts = [row["text"] for row in ocr_records]
+            if qwen and media:
+                if not settings.ocr_enabled:
+                    missing.append("Qwen3Guard仅审核文字，图片OCR已关闭，未审核画面")
+                elif len(ocr_records) != len(media) or any(not text.strip() for text in ocr_texts):
+                    missing.append("部分图片没有可识别文字，Qwen3Guard不支持画面审核")
+                if not message["text"] and not any(text.strip() for text in ocr_texts):
+                    await self.store.call(
+                        "patch",
+                        cid,
+                        {
+                            "missing": list(dict.fromkeys(missing)),
+                            "ocr_records": ocr_records,
+                            "coverage": "current_text_and_image_ocr_only",
+                        },
+                    )
+                    raise Deferred("图片没有可审核文字，本模型不支持画面审核。")
             current_matches, definitions = hints(message, context, settings.terms, ocr_texts)
             # Only standalone static pictures have reusable content-only decisions.
             # Text, quotes, unsupported parts, generic rules and author continuations
@@ -606,21 +640,30 @@ class Service:
                 and not message["text"]
                 and not message["reply"]
                 and not missing
-                and not any(check.key == "rules" for check in settings.checks)
-                and not any(hit.get("来源") for hit in definitions)
+                and (qwen or not any(check.key == "rules" for check in settings.checks))
+                and (qwen or not any(hit.get("来源") for hit in definitions))
             )
             if pure_image:
                 context = []
                 current_matches, definitions = hints(message, context, settings.terms, ocr_texts)
             target = {**message, "at": 0} if pure_image else message
-            state = model_state(target, policy, context, len(media), definitions, ocr_texts)
-            request = OneJev.request(state, settings)
+            if qwen:
+                text = message["text"]
+                if ocr_texts:
+                    text += "\n" + "\n".join(f"[当前图片文字] {t}" for t in ocr_texts if t.strip())
+                state = {"current_text": text.strip()}
+                request = QwenGuard.request(state, settings)
+            else:
+                state = model_state(target, policy, context, len(media), definitions, ocr_texts)
+                request = OneJev.request(state, settings)
             cache_key = (
                 "result:"
                 + fingerprint(
                     [
                         "image-cache-v1",
                         QUESTION_VERSION,
+                        settings.backend,
+                        asdict(settings.qwen) if qwen else None,
                         message["scope"],
                         settings.base_url,
                         fingerprint(settings.api_key),
@@ -645,7 +688,10 @@ class Service:
                     "keyword_matches": current_matches,
                     "context_used": len(context),
                     "context_trimmed": original_count - len(context),
-                    "audit_mode": "image_content" if pure_image else "contextual",
+                    "audit_mode": "current_only" if qwen else "image_content" if pure_image else "contextual",
+                    "coverage": "current_text_only"
+                    if not settings.images_enabled
+                    else ("current_text_and_image_ocr_only" if qwen else "text_and_images"),
                 },
             )
             previous = (
@@ -675,7 +721,7 @@ class Service:
                 except GuardError as exc:
                     missing.append("本地证据归档未完成")
                     self.journal.record("证据归档未完成", case=cid, reason=str(exc), harmful=True)
-            if message["reply"] and (message["scope"], message["reply"]) in self.invalidated:
+            if not qwen and message["reply"] and (message["scope"], message["reply"]) in self.invalidated:
                 missing.append("引用原文在审核期间被撤回")
             flagged, auto, warn = decision.flagged, decision.recall, decision.warn
             if flagged and data.get("batch"):
@@ -691,6 +737,13 @@ class Service:
                     "audit_path": "image_cache" if result.cache_source else "detail",
                     "cache_source": result.cache_source,
                     "scores": result.scores,
+                    "classification": {
+                        "safety": result.safety,
+                        "categories": list(result.categories),
+                        "matched": list(matched_categories(result, settings)),
+                    }
+                    if qwen
+                    else None,
                     "notification_ready": decision.notify,
                     "actual_model": result.model,
                     "missing": missing,
@@ -727,6 +780,8 @@ class Service:
                 "图片审核缓存复用" if result.cache_source else "模型审核完成",
                 case=cid,
                 scores=result.scores,
+                safety=result.safety,
+                categories=result.categories,
                 model=result.model,
                 state=case["state"],
                 input_tokens=result.input_tokens,
@@ -774,7 +829,12 @@ class Service:
             or case["human"]
         ):
             raise Deferred("本条记录不满足自动撤回条件。")
-        if not manual and message.get("reply") and (message["scope"], message["reply"]) in self.invalidated:
+        if (
+            not manual
+            and settings.backend == "onejev"
+            and message.get("reply")
+            and (message["scope"], message["reply"]) in self.invalidated
+        ):
             raise Deferred("引用原文已经撤回，请人工复核当前发言。")
         if case["state"] in ("recalled", "unknown") or case["human"] == "误判":
             raise Deferred("记录已撤回、结果不明或标记为误判，不再操作。")
@@ -1154,7 +1214,11 @@ class Service:
                 raise Deferred("本条记录不满足群内警告条件。")
             if message["scope"] in self.paused_scopes or case["state"] == "unknown":
                 raise Deferred("这个群已暂停或操作结果不明，不发送警告。")
-            if message.get("reply") and (message["scope"], message["reply"]) in self.invalidated:
+            if (
+                latest.backend == "onejev"
+                and message.get("reply")
+                and (message["scope"], message["reply"]) in self.invalidated
+            ):
                 raise Deferred("引用原文已经撤回，不自动警告当前成员。")
             if (
                 (message["scope"], message["mid"]) in self.invalidated or case["state"] == "recalled"
@@ -1189,10 +1253,14 @@ class Service:
             if not own_recall:
                 await self.platform.locate(message)
 
-        hits = "、".join(
-            c.name
-            for c in settings.checks
-            if CATEGORIES[c.name].punishable and case["data"].get("scores", {}).get(c.key, 0) >= c.warn_at
+        hits = (
+            "、".join(QWEN_CATEGORIES[c] for c in case["data"].get("classification", {}).get("matched", []))
+            if settings.backend == "qwen3guard"
+            else "、".join(
+                c.name
+                for c in settings.checks
+                if CATEGORIES[c.name].punishable and case["data"].get("scores", {}).get(c.key, 0) >= c.warn_at
+            )
         )
         text = policy.warning_text.format_map(
             {"群号": message["group"], "QQ号": message["user"], "审核项": hits}

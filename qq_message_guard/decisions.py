@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from .categories import CATEGORIES
+from .classification import matched_categories
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,9 @@ class Decision:
 
 
 def decide(result, settings):
+    if settings.backend == "qwen3guard":
+        flagged = bool(matched_categories(result, settings))
+        return Decision(flagged, flagged, flagged, flagged, "")
     flagged = any(result.scores[c.key] >= c.review_at for c in settings.checks)
     notify = any(result.scores[c.key] >= c.notify_at for c in settings.checks)
     punishable = [c for c in settings.checks if CATEGORIES[c.name].punishable]

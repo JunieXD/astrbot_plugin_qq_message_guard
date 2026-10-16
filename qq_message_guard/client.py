@@ -28,6 +28,8 @@ class Result:
     elapsed_ms: float
     raw_response: dict = field(default_factory=dict)
     cache_source: int = 0
+    safety: str = ""
+    categories: tuple[str, ...] = ()
 
 
 class OneJev:

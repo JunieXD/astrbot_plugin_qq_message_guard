@@ -12,12 +12,13 @@ from .qq_message_guard.client import Media, OneJev
 from .qq_message_guard.commands import Commands
 from .qq_message_guard.config import GuardError, parse_settings
 from .qq_message_guard.platform import Platform
+from .qq_message_guard.qwen import QwenGuard
 from .qq_message_guard.resources import InstanceLock, Journal
 from .qq_message_guard.service import Service
 from .qq_message_guard.store import Store
 
 
-@register("astrbot_plugin_qq_message_guard", "JunieXD", "本地OneJev群消息审核与复核撤回", "0.7.0")
+@register("astrbot_plugin_qq_message_guard", "JunieXD", "本地模型群消息审核与复核撤回", "0.8.0")
 class QQMessageGuard(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context=context, config=config)
@@ -37,18 +38,18 @@ class QQMessageGuard(Star):
             self.journal = Journal(root, settings.advanced)
             self.store = Store(root / "state.sqlite3")
             await self.store.open()
-            self.model = OneJev()
+            self.model = QwenGuard() if settings.backend == "qwen3guard" else OneJev()
             self.media = Media()
             platform = Platform(self.context, self.store, self.settings, self.journal)
             self.service = Service(self.settings, self.store, self.model, self.media, platform, self.journal)
             await self.service.start()
             self.start_error = ""
             logger.info(
-                "QQ 群消息审核 v0.7.0 已加载；总开关：%s；群数：%s；审核项：%s；批量初筛：%s。",
+                "QQ 群消息审核 v0.8.0 已加载；总开关：%s；群数：%s；后端：%s；批量初筛：%s。",
                 settings.enabled,
                 len(settings.groups),
-                len(settings.checks),
-                settings.batch.enabled,
+                settings.backend,
+                settings.batching_enabled,
             )
         except BaseException as exc:
             self.start_error = (

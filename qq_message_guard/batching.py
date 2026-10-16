@@ -21,7 +21,7 @@ def queued_at(case):
 def eligible(case, settings):
     data, message = case["data"], case["data"]["message"]
     if (
-        not settings.batch.enabled
+        not settings.batching_enabled
         or data.get("batch", {}).get("phase") in ("locate", "detail")
         or not settings.enabled
         or case["settings_revision"] != settings.revision
