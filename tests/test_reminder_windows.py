@@ -205,6 +205,53 @@ async def test_channel_cooldown_does_not_suppress_other_recipient(env):
     assert [a for a, _ in env.bot.writes] == ["send_group_msg"]
 
 
+async def test_disabled_notice_cooldown_allows_repeat_but_still_limits_member_warning(env):
+    env.configure(warn_member=True, notify_group=True, admin_group="123456")
+    env.box.settings = replace(
+        env.box.settings, advanced=replace(env.box.settings.advanced, notify_cooldown_minutes=0)
+    )
+    # Existing timers must not suppress notices after the switch to zero.
+    await env.store.call("put", f"notice-member:qq:{A}:{G}:group:123456:{U}", env.clock() + 3600)
+    for i in range(3):
+        if i:
+            env.clock.now += 61
+        await env.speak()
+        case = await env.process()
+        if not i:
+            await env.s.warn(case)
+        else:
+            with pytest.raises(Deferred, match="冷却"):
+                await env.s.warn(case)
+        await env.store.call("patch", case["id"], {"actions_pending": False})
+        await env.s.send_alerts()
+    assert [p["group_id"] for action, p in env.bot.writes] == [G, "123456", "123456", "123456"]
+
+
+async def test_disabled_notice_cooldown_reports_every_record_with_bounded_batches(env):
+    env.configure(notify_group=True, admin_group="123456")
+    env.box.settings = replace(
+        env.box.settings, advanced=replace(env.box.settings.advanced, notify_cooldown_minutes=0)
+    )
+    ids = []
+    for _ in range(10):
+        await env.speak()
+        ids.append((await env.process())["id"])
+    await env.s.send_alerts()
+    first = env.bot.writes[0][1]["message"][0]["data"]["text"]
+    assert first.count("（" + U + "）") == 8
+    assert not (await env.store.call("case", ids[-1]))["notified"]
+    # The per-source interval still applies when per-member cooldown is off.
+    await env.s.send_alerts()
+    assert len(env.bot.writes) == 1
+    env.clock.now += 61
+    await env.s.send_alerts()
+    assert len(env.bot.writes) == 2
+    second = env.bot.writes[1][1]["message"][0]["data"]["text"]
+    assert second.count("（" + U + "）") == 2
+    for cid in ids:
+        assert (await env.store.call("case", cid))["notified"]
+
+
 @pytest.mark.parametrize(
     "outcome,kept", [("not_sent", False), ("failed", False), ("confirmed", True), ("unknown", True)]
 )

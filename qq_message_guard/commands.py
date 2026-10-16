@@ -71,7 +71,19 @@ class Commands:
                 or "未配置"
             )
             notice_thresholds = "、".join(f"{check.name} {check.notify_at:.2f}" for check in settings.checks)
+            notification_cooldown = (
+                f"{settings.advanced.notify_cooldown_minutes}分钟"
+                if settings.advanced.notify_cooldown_minutes
+                else "不按成员冷却（按来源群频率合并）"
+            )
             if settings.backend == "qwen3guard":
+                controversial_status = (
+                    "有争议忽略"
+                    if not settings.qwen.include_controversial
+                    else "有争议也按群开关自动操作"
+                    if settings.qwen.act_on_controversial
+                    else "有争议仅通知管理员，不自动撤回或@"
+                )
                 image_status = (
                     f"图片OCR{'开' if settings.ocr_enabled else '关'}，不识别画面。\n"
                     if settings.images_enabled
@@ -81,7 +93,7 @@ class Commands:
                     f"模型：{settings.model}，仅审核当前发言，不附带前文或引用原文。\n"
                     f"逐条直接分类，不使用批量初筛；{image_status}"
                     f"类别：{'、'.join(settings.qwen.categories)}；"
-                    f"处理{'有争议和不安全' if settings.qwen.include_controversial else '不安全'}，"
+                    f"不安全按群开关自动操作；{controversial_status}。"
                     "无百分比置信度，OneJev分数门槛不适用。\n"
                 )
             else:
@@ -95,7 +107,7 @@ class Commands:
                     f"管理员通知门槛：{notice_thresholds}；按类别分数处理，无额外意图门槛。\n"
                 )
             return (
-                f"群消息审核 v0.8.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.8.1\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"
@@ -114,7 +126,7 @@ class Commands:
                 f"撤回额度：{settings.advanced.recalls_per_hour}/小时，"
                 f"提醒额度：{settings.advanced.writes_per_hour}/小时。\n"
                 f"同成员提醒冷却：@{settings.advanced.warn_cooldown_minutes}分钟，"
-                f"管理员通知{settings.advanced.notify_cooldown_minutes}分钟。\n"
+                f"管理员通知{notification_cooldown}。\n"
                 f"暂停：{'；'.join(stats['pauses'].values()) or '无'}\n"
                 f"模型故障冷却：{max(0, int(self.s.model_cooldown - self.s.clock()))}秒。\n"
                 f"操作节奏：{'接入共享队列' if self.s.platform.shared_guard() else '仅本插件'}。"

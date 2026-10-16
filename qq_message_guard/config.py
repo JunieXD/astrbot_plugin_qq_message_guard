@@ -183,6 +183,7 @@ class Cache:
 class Qwen:
     categories: tuple[str, ...] = QWEN_DEFAULT_NAMES
     include_controversial: bool = True
+    act_on_controversial: bool = False
 
 
 @dataclass(frozen=True)
@@ -250,7 +251,13 @@ def parse_settings(raw):
         or len(set(qwen_names)) != len(qwen_names)
     ):
         raise GuardError("Qwen3Guard审核类别请从列出的原生类别中选择，不可重复。")
-    qwen_settings = Qwen(tuple(qwen_names), switch(qwen, "include_controversial", True))
+    qwen_settings = Qwen(
+        tuple(qwen_names),
+        switch(qwen, "include_controversial", True),
+        switch(qwen, "act_on_controversial", False),
+    )
+    if qwen_settings.act_on_controversial and not qwen_settings.include_controversial:
+        raise GuardError("有争议内容的自动操作需要先开启有争议审核。")
     cache = raw.get("cache", {})
     if not isinstance(cache, dict):
         raise GuardError("表情图片缓存配置应为对象。")
@@ -370,7 +377,7 @@ def parse_settings(raw):
         "recalls_per_hour": (1, 1000),
         "reads_per_hour": (30, 3600),
         "notify_minutes": (1, 1440),
-        "notify_cooldown_minutes": (1, 1440),
+        "notify_cooldown_minutes": (0, 1440),
         "recovery_seconds": (30, 3600),
         "retention_days": (1, 90),
         "harmful_retention_days": (1, 180),

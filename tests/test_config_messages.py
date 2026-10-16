@@ -55,12 +55,18 @@ def test_invalid_config(field, value):
         {"action_min_seconds": float("nan")},
         {"recall_gap_min": 1, "recall_gap_max": 0.2},
         {"recalls_per_hour": 0},
-        {"notify_cooldown_minutes": 0},
+        {"notify_cooldown_minutes": -1},
     ],
 )
 def test_invalid_advanced(more):
     with pytest.raises(GuardError):
         parse_settings({"advanced": more})
+
+
+def test_zero_admin_notice_cooldown_keeps_member_warning_cooldown():
+    settings = parse_settings({"advanced": {"notify_cooldown_minutes": 0}})
+    assert settings.advanced.notify_cooldown_minutes == 0
+    assert settings.advanced.warn_cooldown_minutes == 60
 
 
 @pytest.mark.parametrize(

@@ -18,7 +18,14 @@ class Decision:
 def decide(result, settings):
     if settings.backend == "qwen3guard":
         flagged = bool(matched_categories(result, settings))
-        return Decision(flagged, flagged, flagged, flagged, "")
+        automatic = flagged and (result.safety == "Unsafe" or settings.qwen.act_on_controversial)
+        return Decision(
+            flagged,
+            automatic,
+            automatic,
+            flagged,
+            "模型判为有争议，仅供管理员复核，不自动撤回或@" if flagged and not automatic else "",
+        )
     flagged = any(result.scores[c.key] >= c.review_at for c in settings.checks)
     notify = any(result.scores[c.key] >= c.notify_at for c in settings.checks)
     punishable = [c for c in settings.checks if CATEGORIES[c.name].punishable]

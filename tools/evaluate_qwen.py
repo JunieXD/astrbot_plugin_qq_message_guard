@@ -80,14 +80,18 @@ async def main(args):
             assert data.get("audit_mode") == "current_only"
             assert case["state"] in ("review", "allowed"), (item["id"], data.get("reason"))
             assert data["scores"] == {}
-            assert data["recall_ready"] == bool(case["flagged"])
-            assert data["warn_ready"] == bool(case["flagged"])
+            automatic = bool(case["flagged"]) and data["classification"]["safety"] == "Unsafe"
+            assert data["recall_ready"] == automatic
+            assert data["warn_ready"] == automatic
             row = {
                 "id": item["id"],
                 "source": item["source"],
                 "expected_flag": item["expected_flag"],
                 "flagged": bool(case["flagged"]),
                 "classification": data["classification"],
+                "recall_ready": data["recall_ready"],
+                "warn_ready": data["warn_ready"],
+                "notification_ready": data["notification_ready"],
                 "usage": data["usage"],
                 "state": case["state"],
             }

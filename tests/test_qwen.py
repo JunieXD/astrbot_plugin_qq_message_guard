@@ -52,7 +52,8 @@ def test_malformed_classification_is_not_safe(value):
 def test_categorical_decisions_are_not_fake_probabilities(label):
     r = Result("qwen", {}, 0, 0, 0, safety=label, categories=("Politically Sensitive Topics",))
     decision = decide(r, settings())
-    assert decision.flagged and decision.recall and decision.warn and decision.notify
+    assert decision.flagged and decision.notify
+    assert decision.recall == decision.warn == (label == "Unsafe")
     assert r.scores == {}
     text = classification_text({"classification": {"safety": label, "categories": r.categories}})
     assert "%" not in text and "敏感话题" in text
@@ -63,6 +64,14 @@ def test_disabled_categories_and_controversial_switch():
     assert not decide(r, settings()).flagged
     r = replace(r, safety="Controversial", categories=("Violent",))
     assert not decide(r, settings(qwen=Qwen(include_controversial=False))).flagged
+
+
+def test_controversial_automatic_actions_require_explicit_switch():
+    r = Result("qwen", {}, 0, 0, 0, safety="Controversial", categories=("Violent",))
+    decision = decide(r, settings(qwen=Qwen(act_on_controversial=True)))
+    assert decision.recall and decision.warn and decision.notify
+    with pytest.raises(GuardError):
+        parse_settings({"qwen": {"include_controversial": False, "act_on_controversial": True}})
 
 
 def test_qwen_configuration():
@@ -211,6 +220,25 @@ async def test_quoted_content_does_not_become_reply_authors_content(env):
         assert result["state"] == "allowed" and not result["flagged"]
         assert "其他成员的原文不属于回复者" not in requests[0]["prompt"]
         assert "我们聊点学习吧" in requests[0]["prompt"]
+    finally:
+        await env.s.model.close()
+
+
+async def test_controversial_only_notifies_even_when_group_auto_actions_are_enabled(env):
+    env.configure(auto_recall=True, warn_member=True, notify_group=True, admin_group="123456")
+    use_qwen(env, "Safety: Controversial\nCategories: Politically Sensitive Topics")
+    try:
+        await env.speak()
+        case = await env.process()
+        assert case["flagged"] and case["data"]["notification_ready"]
+        assert not case["data"]["recall_ready"] and not case["data"]["warn_ready"]
+        assert not case["data"]["actions_pending"]
+        assert await env.store.call("next_recall") is None
+        await env.s.send_alerts()
+        assert [a for a, _ in env.bot.writes] == ["send_group_msg"]
+        assert env.bot.writes[0][1]["group_id"] == "123456"
+        text = env.bot.writes[0][1]["message"][0]["data"]["text"]
+        assert "有争议" in text and "未撤回" in text
     finally:
         await env.s.model.close()
 

@@ -997,12 +997,18 @@ class Service:
             batch_key = "alert-batch:" + scope
             batch = await self.store.call("get", batch_key)
             if not batch or batch["revision"] != settings.revision:
-                users = set()
-                for item in cases:
-                    if len(users) < 8:
-                        users.add(item["data"]["message"]["user"])
+                if settings.advanced.notify_cooldown_minutes == 0:
+                    # With member suppression disabled, every finding needs a
+                    # visible entry. Leave overflow for the next notification.
+                    ids = [c["id"] for c in cases[:8]]
+                else:
+                    users = set()
+                    for item in cases:
+                        if len(users) < 8:
+                            users.add(item["data"]["message"]["user"])
+                    ids = [c["id"] for c in cases if c["data"]["message"]["user"] in users]
                 batch = {
-                    "ids": [c["id"] for c in cases if c["data"]["message"]["user"] in users],
+                    "ids": ids,
                     "revision": settings.revision,
                     "anchor": cases[0]["id"],
                 }
@@ -1051,7 +1057,9 @@ class Service:
                 for item in cases:
                     user = item["data"]["message"]["user"]
                     key = f"notice-member:{scope}:{target}:{user}"
-                    if user not in seen and self.clock() >= await self.store.call("get", key, 0):
+                    if settings.advanced.notify_cooldown_minutes == 0:
+                        selected.append(item)
+                    elif user not in seen and self.clock() >= await self.store.call("get", key, 0):
                         selected.append(item)
                         cooldowns.append((key, settings.advanced.notify_cooldown_minutes * 60))
                         seen.add(user)
@@ -1072,7 +1080,7 @@ class Service:
                                 self.journal.record(
                                     "通知证据图片未生成", case=item["id"], reason=str(exc), harmful=True
                                 )
-                        # One first-page preview per member keeps batched notices bounded.
+                        # One preview per selected finding, at most eight per batch.
                         if previews[item["id"]] is not None:
                             segments.append(previews[item["id"]])
 
