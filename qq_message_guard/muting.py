@@ -79,7 +79,9 @@ class EscalatingMute:
         if key not in self.active and history is None:
             return
         self.notice_versions[key] = self.notice_versions.get(key, 0) + 1
-        await self.s.store.call("mute_notice", scope, user, stamp, duration, self.s.clock())
+        await self.s.store.call(
+            "mute_notice", scope, user, stamp, duration, self.s.clock(), str(raw.get("operator_id", ""))
+        )
 
     async def strikes(self, case, rules, history):
         since = max(self.s.clock() - rules.window_minutes * 60, (history or {}).get("muted_at", 0))

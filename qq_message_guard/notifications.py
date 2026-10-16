@@ -76,6 +76,11 @@ def notification_text(cases, policy, settings):
             handled += f" · 禁言{duration}"
         elif data.get("mute_status") == "unknown":
             handled += " · 禁言结果待核对"
+        if data.get("controversy_mute_status") == "confirmed":
+            minutes = data["controversy_mute_seconds"] // 60
+            handled += f" · 争议累计禁言{minutes}分钟"
+        elif data.get("controversy_mute_status") == "unknown":
+            handled += " · 争议禁言结果待核对"
         local = datetime.fromtimestamp(message["at"], timezone(timedelta(hours=8)))
         stamp = f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}:{local.second:02d}"
         reference = f" · #{case['id']}" if settings.evidence.notify_images else ""

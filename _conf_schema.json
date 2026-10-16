@@ -29,21 +29,21 @@
         "description": "审核有争议内容并通知管理员",
         "type": "bool",
         "default": true,
-        "hint": "开启后将有争议内容交给管理员复核，默认不自动撤回或@。关闭则忽略有争议，仅处理不安全。"
+        "hint": "开启后审核有争议内容，默认交给管理员复核；各群可独立开启争议提醒与累计短时禁言。关闭则忽略有争议，仅处理不安全。"
       },
       "act_on_controversial": {
         "description": "有争议时也自动撤回／@",
         "type": "bool",
         "default": false,
-        "hint": "通常关闭，让有争议仅通知管理员。开启后仍需每群的撤回／警告开关开启，并通过原有保护检查。OneJev的分数门槛对Qwen3Guard无效。"
+        "hint": "兼容旧策略，通常关闭。若本群开启独立争议提醒，改用该提醒策略且不自动撤回争议原消息。本开关仅对未开启独立争议提醒的群生效。OneJev分数门槛对Qwen3Guard无效。"
       },
       "controversial_local_only": {
-        "description": "有争议时只留本地记录的类别",
+        "description": "有争议时不通知管理员的类别",
         "type": "list",
         "default": [
           "不当行为"
         ],
-        "hint": "这些类别在判为有争议时不通知、不撤回、不@，本地仍留完整记录；留空则所有启用类别都按有争议规则处理。若同条还命中其他需通知类别，仍会通知；不安全的处理不受此项影响。类别名称与上方审核类别一致。"
+        "hint": "这些争议类别默认只留本地，不通知管理员、不走旧自动操作；如在本群独立争议提醒中明确勾选，仍可提醒及累计短禁言。默认不勾选不当行为。混合命中其他需通知类别仍通知；不安全内容不受此项影响。"
       }
     }
   },
@@ -143,6 +143,89 @@
             "type": "bool",
             "default": true,
             "hint": "直接跳过QQ身份为群主或管理员的发言，不调用模型，不发审核通知；发言仍可作为其他消息的背景。"
+          },
+          "controversy": {
+            "description": "有争议内容：提醒与短时禁言",
+            "type": "object",
+            "items": {
+              "enabled": {
+                "description": "启用群内争议提醒",
+                "type": "bool",
+                "default": false,
+                "hint": "仅Qwen3Guard且开启有争议审核时生效。单次只@提醒，不撤回原消息；与原有不安全内容警告开关、同成员一小时冷却独立。仍受账号总额度及本群每小时提醒上限控制。"
+              },
+              "categories": {
+                "description": "哪些争议类别需要群内提醒",
+                "type": "list",
+                "default": [
+                  "敏感话题",
+                  "暴力内容",
+                  "违法行为",
+                  "色情"
+                ],
+                "hint": "仅填写已启用的模型类别名称。不当行为默认不在此列，不提醒、不计数。多类命中按列表顺序选择一句，只计一次。管理员通知仍使用上方Qwen设置，互不捆绑。"
+              },
+              "messages": {
+                "description": "各类别的一句话提醒（自动@）",
+                "type": "object",
+                "items": {
+                  "敏感话题": {
+                    "description": "敏感话题",
+                    "type": "string",
+                    "default": "这类话题容易引起争议，请留意措辞，避免继续展开。"
+                  },
+                  "暴力内容": {
+                    "description": "暴力内容",
+                    "type": "string",
+                    "default": "这句话可能被理解为威胁，请留意措辞。"
+                  },
+                  "违法行为": {
+                    "description": "违法行为",
+                    "type": "string",
+                    "default": "这段内容可能涉及违规活动，请留意，避免继续展开。"
+                  },
+                  "色情": {
+                    "description": "色情",
+                    "type": "string",
+                    "default": "请注意聊天尺度，避免涉及色情或露骨内容。"
+                  },
+                  "不当行为": {
+                    "description": "不当行为（添加到提醒类别才生效）",
+                    "type": "string",
+                    "default": "请友善交流，避免可能冒犯他人的表达。"
+                  }
+                }
+              },
+              "mute_enabled": {
+                "description": "多次争议提醒后短时禁言",
+                "type": "bool",
+                "default": true,
+                "hint": "只统计本插件已确认成功发出的争议提醒；原消息或提醒撤回不清零计数。不套用原有违规禁言翻倍规则，不覆盖已有禁言，不自动解禁。"
+              },
+              "window_minutes": {
+                "description": "多少分钟内累计提醒",
+                "type": "int",
+                "default": 10
+              },
+              "trigger_warnings": {
+                "description": "累计提醒几次触发禁言",
+                "type": "int",
+                "default": 3,
+                "hint": "默认第3次成功提醒后触发；按来源群、机器人账号、成员分别统计，各类别合并计数，同一条只计一次。"
+              },
+              "mute_minutes": {
+                "description": "每次禁言时长（分钟）",
+                "type": "int",
+                "default": 10,
+                "hint": "默认固定10分钟。禁言成功后结束本轮计数，下一轮重新累计。"
+              },
+              "retract_seconds": {
+                "description": "提醒发出后多久内本人撤回会清理提醒（秒）",
+                "type": "int",
+                "default": 120,
+                "hint": "默认2分钟。只确认本人撤回原消息时，撤回对应的bot提醒；不会撤回其他消息，也不解除已生效的禁言。"
+              }
+            }
           },
           "mute": {
             "description": "重复违规禁言",

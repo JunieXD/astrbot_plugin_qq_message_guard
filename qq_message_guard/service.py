@@ -22,6 +22,7 @@ from .config import (
     Uncertain,
     fingerprint,
 )
+from .controversy import ControversyReminders, selected_categories
 from .decisions import decide
 from .evidence import EvidenceArchive, atomic_write, evidence_path, original_text
 from .lexicon import hints, screen_output
@@ -68,6 +69,7 @@ class Service:
         self.last_maintenance = 0
         self.timings = {}
         self.mutes = EscalatingMute(self)
+        self.controversies = ControversyReminders(self)
 
     async def start(self):
         # Observe local websocket identities only; never query or backfill QQ history.
@@ -89,6 +91,7 @@ class Service:
             asyncio.create_task(self.worker()),
             asyncio.create_task(self.notifier()),
             asyncio.create_task(self.action_worker()),
+            asyncio.create_task(self.controversies.worker()),
         }
 
     async def stop(self):
@@ -214,6 +217,7 @@ class Service:
             except GuardError:
                 return
             self.invalidated[(scope, mid)] = self.clock() + 600
+            await self.controversies.recalled(raw, scope, mid)
             await self.store.call("recalled", scope, mid, self.clock())
         elif str(raw.get("user_id", "")) == account and (
             kind == "group_decrease" or (kind == "group_admin" and raw.get("sub_type") == "unset")
@@ -729,6 +733,10 @@ class Service:
             if not qwen and message["reply"] and (message["scope"], message["reply"]) in self.invalidated:
                 missing.append("引用原文在审核期间被撤回")
             flagged, auto, warn = decision.flagged, decision.recall, decision.warn
+            gentle_categories = selected_categories(result, settings, policy) if qwen else ()
+            gentle = bool(gentle_categories and not missing)
+            if qwen and result.safety == "Controversial" and policy.controversy.enabled:
+                auto = warn = False
             if flagged and data.get("batch"):
                 await self.store.call("flag_screenings", data["batch"]["screening_ids"])
                 if data["batch"].get("spot_check"):
@@ -753,7 +761,21 @@ class Service:
                     "notification_ready": decision.notify,
                     "actual_model": result.model,
                     "missing": missing,
-                    "reason": "；".join([*missing, *([decision.reason] if decision.reason else [])]),
+                    "reason": "；".join(
+                        [
+                            *missing,
+                            *(
+                                ["争议内容按独立提醒规则处理，不自动撤回原消息"]
+                                if gentle_categories
+                                else [decision.reason]
+                                if decision.reason
+                                else []
+                            ),
+                        ]
+                    ),
+                    "controversy_categories": list(gentle_categories),
+                    "controversy_policy": asdict(policy.controversy),
+                    "controversy_ready": gentle,
                     "audit_response": result.raw_response,
                     "usage": {
                         "input_tokens": result.input_tokens,
@@ -763,10 +785,10 @@ class Service:
                     "recall_ready": bool(auto and not missing and policy.auto_recall),
                     "warn_ready": bool(warn and not missing and policy.warn_member),
                     "auto_ready": bool(
-                        not missing and (auto and policy.auto_recall or warn and policy.warn_member)
+                        not missing and (auto and policy.auto_recall or warn and policy.warn_member or gentle)
                     ),
                     "actions_pending": bool(
-                        not missing and (auto and policy.auto_recall or warn and policy.warn_member)
+                        not missing and (auto and policy.auto_recall or warn and policy.warn_member or gentle)
                     ),
                 },
                 self.clock(),
@@ -943,6 +965,9 @@ class Service:
                         pass
                     continue
                 try:
+                    if case["data"].get("controversy_ready"):
+                        await self.controversies.warn(case)
+                        continue
                     if case["data"].get("recall_ready"):
                         try:
                             await self.recall(case)

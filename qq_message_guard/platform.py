@@ -6,6 +6,7 @@ import time
 
 from .config import Deferred, GuardError, Uncertain
 from .messages import message_id, signature
+from .operations import MUTE_KINDS, RECALL_KINDS, WARNING_KINDS
 
 
 class ApiFailure(GuardError):
@@ -131,14 +132,14 @@ class Platform:
         more = self.settings().advanced
         gap_range = (
             (more.recall_gap_min, more.recall_gap_max)
-            if kind in ("recall", "mute")
+            if kind in (*RECALL_KINDS, *MUTE_KINDS)
             else (more.account_gap_min, more.account_gap_max)
         )
         limit = (
             more.recalls_per_hour
-            if kind == "recall"
+            if kind in RECALL_KINDS
             else more.mutes_per_hour
-            if kind == "mute"
+            if kind in MUTE_KINDS
             else more.writes_per_hour
         )
         async with lock:
@@ -160,7 +161,7 @@ class Platform:
                     more = self.settings().advanced
                     if await self.store.call("get", "pause:" + key):
                         raise Deferred("账号操作已暂停，请核对后恢复。")
-                    if kind in ("recall", "mute", "warn") and await self.store.call(
+                    if kind in ("recall", *MUTE_KINDS, *WARNING_KINDS) and await self.store.call(
                         "get", "group-pause:" + message["scope"]
                     ):
                         raise Deferred("这个群的操作已暂停，请核对后恢复。")
@@ -211,9 +212,9 @@ class Platform:
                                 raise ApiFailure(action, result)
                             raise Uncertain("QQ接口未返回明确的操作结果，不会重发。")
                         result = result.get("data")
-                    if kind in ("recall", "mute") and result is not None:
+                    if kind in (*RECALL_KINDS, *MUTE_KINDS) and result is not None:
                         raise Uncertain("撤回或禁言接口返回类型异常，未确认操作结果。")
-                    if kind not in ("recall", "mute"):
+                    if kind not in (*RECALL_KINDS, *MUTE_KINDS):
                         try:
                             message_id(result.get("message_id") if isinstance(result, dict) else None)
                         except GuardError as exc:
@@ -221,7 +222,9 @@ class Platform:
                     # Once QQ acknowledges success, a reload must finish saving
                     # it before the store closes. Cancellation of aiosqlite's
                     # await does not reliably cancel its queued SQLite commit.
-                    confirmation = asyncio.create_task(self.store.call("confirm", oid, self.clock(), gap))
+                    confirmation = asyncio.create_task(
+                        self.store.call("confirm", oid, self.clock(), gap, result)
+                    )
                     try:
                         await asyncio.shield(confirmation)
                     except asyncio.CancelledError:
@@ -241,7 +244,7 @@ class Platform:
                             else "not_sent"
                         )
                         await asyncio.shield(self.store.call("operation", oid, state, str(exc)))
-                    if not submitted and isinstance(exc, ApiFailure):
+                    if (not submitted or kind == "controversy_cleanup") and isinstance(exc, ApiFailure):
                         # A failed permission/message read is a deferred preparation,
                         # not a failed QQ write that should trip the shared account guard.
                         raise Deferred(str(exc)) from exc
@@ -270,15 +273,16 @@ class Platform:
             try:
                 options = (
                     dict(
-                        priority=0 if kind == "recall" else 1 if kind in ("mute", "warn") else 2,
+                        priority=0 if kind == "recall" else 1 if kind in (*MUTE_KINDS, *WARNING_KINDS) else 2,
                         group=message["group"],
-                        label="消息撤回"
-                        if kind == "recall"
-                        else "重复违规禁言"
-                        if kind == "mute"
-                        else "成员警告"
-                        if kind == "warn"
-                        else "管理提醒",
+                        label={
+                            "recall": "消息撤回",
+                            "mute": "重复违规禁言",
+                            "warn": "成员警告",
+                            "controversy_warn": "争议提醒",
+                            "controversy_mute": "争议累计禁言",
+                            "controversy_cleanup": "清理争议提醒",
+                        }.get(kind, "管理提醒"),
                     )
                     if getattr(guard, "scheduling_version", 1) >= 3
                     else {}

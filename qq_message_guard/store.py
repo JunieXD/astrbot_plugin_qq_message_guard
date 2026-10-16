@@ -8,6 +8,7 @@ import aiosqlite
 
 from .config import Deferred, GuardError
 from .muting import member_key, observation_key
+from .operations import MUTE_KINDS, RECALL_KINDS, WARNING_KINDS
 
 
 class Store:
@@ -68,6 +69,15 @@ class Store:
             CREATE TABLE IF NOT EXISTS mute_strikes (
                 case_id INTEGER PRIMARY KEY, scope TEXT NOT NULL, user TEXT NOT NULL, at REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS mute_strike_member ON mute_strikes(scope,user,at);
+            CREATE TABLE IF NOT EXISTS controversy_warnings (
+                case_id INTEGER PRIMARY KEY, scope TEXT NOT NULL, user TEXT NOT NULL,
+                source_mid TEXT NOT NULL, warning_mid TEXT NOT NULL, at REAL NOT NULL,
+                deadline REAL NOT NULL, cleanup_state TEXT NOT NULL DEFAULT 'open',
+                retry_at REAL NOT NULL DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS controversy_member ON controversy_warnings(scope,user,at);
+            CREATE INDEX IF NOT EXISTS controversy_source ON controversy_warnings(scope,source_mid);
+            CREATE INDEX IF NOT EXISTS controversy_message ON controversy_warnings(scope,warning_mid);
+            CREATE INDEX IF NOT EXISTS controversy_cleanup ON controversy_warnings(cleanup_state,retry_at);
         """)
         columns = {row["name"] for row in await self._rows("PRAGMA table_info(calls)")}
         if "stage" not in columns:
@@ -77,7 +87,7 @@ class Store:
         history_columns = {row["name"] for row in await self._rows("PRAGMA table_info(history)")}
         if "sender_name" not in history_columns:
             await self.db.execute("ALTER TABLE history ADD COLUMN sender_name TEXT NOT NULL DEFAULT ''")
-        await self.db.execute("PRAGMA user_version=6")
+        await self.db.execute("PRAGMA user_version=7")
         await self.call("recover", time.time())
 
     async def close(self):
@@ -477,11 +487,11 @@ class Store:
         if await self.get("pause:" + account):
             raise Deferred("这个账号的审核操作已暂停，请检查状态。")
         category = (
-            "kind='recall'"
-            if kind == "recall"
-            else "kind='mute'"
-            if kind == "mute"
-            else "kind NOT IN ('recall','mute')"
+            "kind IN ('recall','controversy_cleanup')"
+            if kind in RECALL_KINDS
+            else "kind IN ('mute','controversy_mute')"
+            if kind in MUTE_KINDS
+            else "kind NOT IN ('recall','controversy_cleanup','mute','controversy_mute')"
         )
         count = await self._row(
             "SELECT count(*) FROM operations WHERE account=? AND at>? AND state!='not_sent' AND " + category,
@@ -491,15 +501,15 @@ class Store:
             raise Deferred("本插件每小时操作额度已用完。")
         if now < await self.get("gap:" + account, 0):
             raise Deferred("操作间隔尚未结束。")
-        if kind == "warn":
+        if kind in WARNING_KINDS:
             case = await self.case(cid)
             message = case["data"]["message"]
             warn_key = f"warn:{account}:{message['group']}:{message['user']}"
-            if now < await self.get(warn_key, 0):
+            if kind == "warn" and now < await self.get(warn_key, 0):
                 raise Deferred("这个成员的群内警告仍在冷却期，不重复@。")
             count = await self._row(
                 "SELECT count(*) FROM operations o JOIN cases c ON c.id=o.case_id"
-                " WHERE o.account=? AND c.scope=? AND o.kind='warn' AND o.at>?"
+                " WHERE o.account=? AND c.scope=? AND o.kind IN ('warn','controversy_warn') AND o.at>?"
                 " AND o.state!='not_sent'",
                 (account, case["scope"], now - 3600),
             )
@@ -562,6 +572,16 @@ class Store:
                         confirmed_at if confirmed_at is not None else time.time(),
                         flagged=True,
                     )
+            elif previous["kind"] == "controversy_mute":
+                await self.patch(
+                    previous["case_id"],
+                    {"controversy_mute_status": state, "controversy_mute_reason": detail[:500]},
+                )
+            if previous["kind"] == "controversy_cleanup":
+                await self.db.execute(
+                    "UPDATE controversy_warnings SET cleanup_state=? WHERE case_id=?",
+                    ("pending" if state == "not_sent" else state, previous["case_id"]),
+                )
             if state == "unknown":
                 # Persist the pause with the uncertain outcome. A power loss
                 # between separate commits must not silently re-enable writes.
@@ -575,13 +595,120 @@ class Store:
                         await self.db.execute("DELETE FROM state WHERE key=?", (name,))
             await self.db.execute("DELETE FROM state WHERE key=?", (key,))
 
-    async def confirm(self, oid, now, gap):
+    async def confirm(self, oid, now, gap, receipt=None):
         operation = await self._row("SELECT * FROM operations WHERE id=?", (oid,))
         if operation is None:
             raise GuardError("QQ操作记录不存在，无法保存回执。")
         await self.operation(oid, "confirmed", "", now)
+        if operation["state"] != "confirmed":
+            if operation["kind"] == "controversy_warn":
+                await self.confirm_controversy_warning(operation, now, receipt)
+            elif operation["kind"] == "controversy_mute":
+                await self.confirm_controversy_mute(operation, now)
         # Pace from the response, in the same transaction as the acknowledgement.
         await self.put("gap:" + operation["account"], now + gap)
+
+    async def confirm_controversy_warning(self, operation, now, receipt):
+        from .messages import message_id
+
+        mid = message_id(receipt.get("message_id") if isinstance(receipt, dict) else None)
+        case = await self.case(operation["case_id"])
+        data, message = case["data"], case["data"]["message"]
+        deadline = now + data["controversy_policy"]["retract_seconds"]
+        recalled = data.get("controversy_self_recalled_at")
+        cleanup = "pending" if recalled is not None and recalled <= deadline else "open"
+        await self.db.execute(
+            "INSERT INTO controversy_warnings(case_id,scope,user,source_mid,warning_mid,at,deadline,cleanup_state)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (case["id"], case["scope"], message["user"], message["mid"], mid, now, deadline, cleanup),
+        )
+        await self.patch(
+            case["id"],
+            {
+                "warned": True,
+                "controversy_warned": True,
+                "controversy_warning_mid": mid,
+                "controversy_warned_at": now,
+            },
+        )
+
+    async def confirm_controversy_mute(self, operation, now):
+        case = await self.case(operation["case_id"])
+        plan = case["data"]["controversy_mute_plan"]
+        duration = plan["duration"]
+        if type(duration) is not int or not 1 <= duration <= 2592000:
+            raise GuardError("争议禁言计划无效，请人工核对，不自动重试。")
+        until = now + duration
+        await self.put(
+            f"controversy-round:{case['scope']}:{case['data']['message']['user']}",
+            {"at": now, "until": until, "case_id": case["id"]},
+        )
+        await self.patch(
+            case["id"],
+            {
+                "controversy_mute_status": "confirmed",
+                "controversy_mute_seconds": duration,
+                "controversy_mute_until": until,
+            },
+        )
+
+    async def controversy_strikes(self, scope, user, since, now):
+        history = await self.get(f"controversy-round:{scope}:{user}", {})
+        return [
+            dict(row)
+            for row in await self._rows(
+                "SELECT w.case_id,w.at FROM controversy_warnings w JOIN cases c ON c.id=w.case_id"
+                " WHERE w.scope=? AND w.user=? AND w.at>=? AND w.at<=? AND w.at>?"
+                " AND json_extract(c.data,'$.message.at')>=? AND c.human!='误判'"
+                " AND COALESCE(json_extract(c.data,'$.cache_invalidated'),0)!=1 ORDER BY w.at,w.case_id",
+                (scope, user, since, now, history.get("at", 0), int(history["at"]) + 1 if history else 0),
+            )
+        ]
+
+    async def controversy_recalled(self, scope, mid, user, operator, stamp, now):
+        # A member/admin can also withdraw the bot's reminder. It is already gone.
+        await self.db.execute(
+            "UPDATE controversy_warnings SET cleanup_state='gone' WHERE scope=? AND warning_mid=?",
+            (scope, mid),
+        )
+        if user != operator:
+            return
+        for row in await self._rows(
+            "SELECT * FROM cases WHERE scope=? AND json_extract(data,'$.message.mid')=?",
+            (scope, mid),
+        ):
+            case = self._case(row)
+            if case["data"]["message"]["user"] != user or stamp < case["data"]["message"]["at"]:
+                continue
+            await self.patch(case["id"], {"controversy_self_recalled_at": stamp})
+            await self.db.execute(
+                "UPDATE controversy_warnings SET cleanup_state='pending',retry_at=0"
+                " WHERE case_id=? AND cleanup_state IN ('open','expired') AND deadline>=? AND deadline+300>=?",
+                (case["id"], stamp, now),
+            )
+
+    async def pending_controversy_cleanup(self, now):
+        await self.db.execute(
+            "UPDATE controversy_warnings SET cleanup_state='expired'"
+            " WHERE (cleanup_state='open' AND deadline<?) OR (cleanup_state='pending' AND deadline+300<?)",
+            (now, now),
+        )
+        row = await self._row(
+            "SELECT w.* FROM controversy_warnings w JOIN cases c ON c.id=w.case_id"
+            " WHERE w.cleanup_state='pending' AND w.retry_at<=? ORDER BY w.at,w.case_id LIMIT 1",
+            (now,),
+        )
+        return dict(row) if row else None
+
+    async def defer_controversy_cleanup(self, cid, now):
+        await self.db.execute("UPDATE controversy_warnings SET retry_at=? WHERE case_id=?", (now + 30, cid))
+
+    async def controversy_warning(self, cid):
+        row = await self._row("SELECT * FROM controversy_warnings WHERE case_id=?", (cid,))
+        return dict(row) if row else None
+
+    async def close_controversy_cleanup(self, cid, state):
+        await self.db.execute("UPDATE controversy_warnings SET cleanup_state=? WHERE case_id=?", (state, cid))
 
     async def confirmed_member_operation(self, operation, now):
         if operation["kind"] not in ("recall", "mute", "warn") or operation["case_id"] is None:
@@ -656,7 +783,7 @@ class Store:
             )
         ]
 
-    async def mute_notice(self, scope, user, stamp, duration, now):
+    async def mute_notice(self, scope, user, stamp, duration, now, operator=""):
         key = member_key(scope, user)
         history = await self.get(key)
         observed = await self.get(observation_key(scope, user), {})
@@ -664,7 +791,18 @@ class Store:
             return
         until = stamp + duration
         await self.put(observation_key(scope, user), {"event_at": stamp, "until": until, "received_at": now})
-        if history:
+        own_short_mute = None
+        if operator == scope.rsplit(":", 2)[-2]:
+            own_short_mute = await self._row(
+                "SELECT 1 FROM operations o JOIN cases c ON c.id=o.case_id"
+                " WHERE o.kind='controversy_mute' AND o.state IN ('submitted','confirmed','unknown')"
+                " AND c.scope=? AND json_extract(c.data,'$.message.user')=?"
+                " AND json_extract(c.data,'$.controversy_mute_plan.duration')=?"
+                " AND o.at>=? AND o.at<? LIMIT 1",
+                (scope, user, duration, stamp - 15, stamp + 1),
+            )
+        short_round = await self.get(f"controversy-round:{scope}:{user}", {})
+        if history and not own_short_mute and short_round.get("at", 0) <= history.get("muted_at", 0):
             await self.put(key, {**history, "until": until, "observed_event": stamp})
 
     async def mute_observe_member(self, scope, user, until, now, message_at):
@@ -672,6 +810,11 @@ class Store:
         history = await self.get(key)
         if history is None:
             return None
+        short_round = await self.get(f"controversy-round:{scope}:{user}", {})
+        if short_round.get("at", 0) > history["muted_at"]:
+            # A newer short mute is a separate policy, not an adjustment to the
+            # old unsafe ban. Its timestamp must not revive an expired multiplier.
+            return history
         actual = history["until"]
         if until > now:
             actual = until
@@ -813,6 +956,10 @@ class Store:
         await self.db.execute(
             "DELETE FROM mute_strikes WHERE at<? OR case_id NOT IN (SELECT id FROM cases)", (now - 86400,)
         )
+        await self.db.execute("DELETE FROM controversy_warnings WHERE case_id NOT IN (SELECT id FROM cases)")
+        for row in await self._rows("SELECT key,value FROM state WHERE key LIKE 'controversy-round:%'"):
+            if json.loads(row["value"]).get("until", 0) < now - 86400:
+                await self.db.execute("DELETE FROM state WHERE key=?", (row["key"],))
         for row in await self._rows(
             "SELECT key,value FROM state WHERE key LIKE 'mute-member:%' OR key LIKE 'mute-observed:%'"
         ):

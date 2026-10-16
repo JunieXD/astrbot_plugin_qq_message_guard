@@ -53,3 +53,9 @@
 - NapCat成员信息转换保留`shut_up_timestamp`（禁言截止时间）；读取时带`no_cache=True`。未知或缺失值不会当作未禁言，触发时放弃自动操作。
 - NapCat群禁言事件解析生成`group_ban`，含`ban/lift_ban`、成员与操作者、duration；插件只跟踪自己的禁言进度，不恢复完整外部禁言历史。
 - 单次时长由本插件限制到最多2592000秒（30天），不设置全员禁言、不发送duration=0的解禁请求。
+
+## 争议提醒撤回联动（v0.10.0）
+
+- 本机NapCat的`OB11GroupRecallNoticeEvent`同时提供`group_id`、原作者`user_id`、撤回操作者`operator_id`、`message_id`以及通知时间。仅当作者与操作者相同、对应已审核原消息且在提醒窗口内时，建立本人撤回事件；不凭消息消失推断是本人撤回。
+- `send_group_msg`的实际`message_id`与提醒确认时间一同持久化。清理前通过`get_msg`核对目标消息的群、ID和机器人作者；`delete_msg`仍以空结果确认，不使用客户端展示序号或引用ID猜测目标。
+- 新短禁言复用`set_group_ban`、角色及`shut_up_timestamp`核验和共享队列；操作记录、计数和禁言历史使用独立类型，自己的短禁言通知不会修改旧的阶梯禁言窗口。

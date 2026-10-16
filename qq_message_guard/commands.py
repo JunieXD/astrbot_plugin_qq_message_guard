@@ -66,6 +66,7 @@ class Commands:
                     f"私聊通知{'开' if p.notify_private else '关'}、"
                     f"管理员群通知{'开' if p.notify_group else '关'}"
                     f"、重复违规禁言{'开' if p.mute.enabled else '关'}"
+                    f"、争议提醒{'开' if p.controversy.enabled else '关'}"
                     for p in settings.groups
                     if p.enabled
                 )
@@ -83,11 +84,11 @@ class Commands:
                     if not settings.qwen.include_controversial
                     else "有争议也按群开关自动操作"
                     if settings.qwen.act_on_controversial
-                    else "有争议仅通知管理员，不自动撤回或@"
+                    else "有争议默认仅通知管理员；各群可独立开启群内提醒与累计短时禁言"
                 )
                 if settings.qwen.controversial_local_only:
                     controversial_status += (
-                        "；其中" + "、".join(settings.qwen.controversial_local_only) + "仅留本地记录"
+                        "；其中" + "、".join(settings.qwen.controversial_local_only) + "有争议时不通知管理员"
                     )
                 image_status = (
                     f"图片OCR{'开' if settings.ocr_enabled else '关'}，不识别画面。\n"
@@ -112,7 +113,7 @@ class Commands:
                     f"管理员通知门槛：{notice_thresholds}；按类别分数处理，无额外意图门槛。\n"
                 )
             return (
-                f"群消息审核 v0.9.1\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.10.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"

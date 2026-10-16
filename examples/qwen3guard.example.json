@@ -28,6 +28,20 @@
       "warn_member": false,
       "notify_group": false,
       "notify_private": false,
+      "controversy": {
+        "enabled": false,
+        "categories": [
+          "敏感话题",
+          "暴力内容",
+          "违法行为",
+          "色情"
+        ],
+        "window_minutes": 10,
+        "trigger_warnings": 3,
+        "mute_enabled": true,
+        "mute_minutes": 10,
+        "retract_seconds": 120
+      },
       "mute": {
         "enabled": false,
         "window_minutes": 10,

@@ -18,7 +18,7 @@ from .qq_message_guard.service import Service
 from .qq_message_guard.store import Store
 
 
-@register("astrbot_plugin_qq_message_guard", "JunieXD", "本地模型群消息审核与复核撤回", "0.9.1")
+@register("astrbot_plugin_qq_message_guard", "JunieXD", "本地模型群消息审核与复核撤回", "0.10.0")
 class QQMessageGuard(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context=context, config=config)
@@ -45,11 +45,12 @@ class QQMessageGuard(Star):
             await self.service.start()
             self.start_error = ""
             logger.info(
-                "QQ 群消息审核 v0.9.1 已加载；总开关：%s；群数：%s；后端：%s；批量初筛：%s。",
+                "QQ 群消息审核 v0.10.0 已加载；总开关：%s；群数：%s；后端：%s；批量初筛：%s；争议提醒群数：%s。",
                 settings.enabled,
                 len(settings.groups),
                 settings.backend,
                 settings.batching_enabled,
+                sum(p.enabled and p.controversy.enabled for p in settings.groups),
             )
         except BaseException as exc:
             self.start_error = (

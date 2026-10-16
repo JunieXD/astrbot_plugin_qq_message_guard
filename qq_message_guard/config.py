@@ -39,6 +39,13 @@ DEFAULT_RULES = (
     "现实暴力威胁与群体仇恨。按当前内容和实际引用判断，其他人的背景消息仅帮助消歧。"
 )
 QUESTION_VERSION = "qq-message-guard-content-v7-qwen-native"
+CONTROVERSY_MESSAGES = (
+    ("敏感话题", "这类话题容易引起争议，请留意措辞，避免继续展开。"),
+    ("暴力内容", "这句话可能被理解为威胁，请留意措辞。"),
+    ("违法行为", "这段内容可能涉及违规活动，请留意，避免继续展开。"),
+    ("色情", "请注意聊天尺度，避免涉及色情或露骨内容。"),
+    ("不当行为", "请友善交流，避免可能冒犯他人的表达。"),
+)
 
 
 def fingerprint(value):
@@ -110,6 +117,18 @@ class MutePolicy:
 
 
 @dataclass(frozen=True)
+class Controversy:
+    enabled: bool = False
+    categories: tuple[str, ...] = ("敏感话题", "暴力内容", "违法行为", "色情")
+    messages: tuple[tuple[str, str], ...] = CONTROVERSY_MESSAGES
+    window_minutes: int = 10
+    trigger_warnings: int = 3
+    mute_enabled: bool = True
+    mute_minutes: int = 10
+    retract_seconds: int = 120
+
+
+@dataclass(frozen=True)
 class Policy:
     group_id: str
     enabled: bool = True
@@ -126,6 +145,7 @@ class Policy:
     display_name: str = ""
     skip_admins: bool = True
     mute: MutePolicy = field(default_factory=MutePolicy)
+    controversy: Controversy = field(default_factory=Controversy)
 
     @property
     def revision(self):
@@ -354,6 +374,35 @@ def parse_settings(raw):
         )
         if muting.max_minutes < muting.initial_minutes:
             raise GuardError("最长禁言时间不能小于首次禁言时间。")
+        gentle = item.get("controversy", {})
+        if not isinstance(gentle, dict):
+            raise GuardError("争议提醒配置应为对象。")
+        texts = gentle.get("messages", dict(CONTROVERSY_MESSAGES))
+        if not isinstance(texts, dict) or any(
+            name not in QWEN_CATEGORIES.values()
+            or not isinstance(text, str)
+            or not 1 <= len(text.strip()) <= 200
+            or "\n" in text
+            or "\r" in text
+            for name, text in texts.items()
+        ):
+            raise GuardError("争议分类提醒文案应为1～200字的单行文字，类别名称需有效。")
+        controversy = Controversy(
+            enabled=switch(gentle, "enabled", False),
+            categories=qwen_category_names(
+                gentle.get("categories", list(Controversy.categories)), "争议提醒类别", allow_empty=True
+            ),
+            messages=tuple(
+                {**dict(CONTROVERSY_MESSAGES), **{k: v.strip() for k, v in texts.items()}}.items()
+            ),
+            window_minutes=integer(gentle.get("window_minutes", 10), "争议提醒计数窗口分钟", 1, 1440),
+            trigger_warnings=integer(gentle.get("trigger_warnings", 3), "争议提醒禁言次数", 1, 100),
+            mute_enabled=switch(gentle, "mute_enabled", True),
+            mute_minutes=integer(gentle.get("mute_minutes", 10), "争议提醒禁言分钟", 1, 43200),
+            retract_seconds=integer(
+                gentle.get("retract_seconds", 120), "本人撤回后清理提醒的窗口秒数", 1, 600
+            ),
+        )
         policies.append(
             Policy(
                 group_id=group_id,
@@ -371,6 +420,7 @@ def parse_settings(raw):
                 display_name=display_name.strip(),
                 skip_admins=switch(item, "skip_admins", True),
                 mute=muting,
+                controversy=controversy,
             )
         )
     if len({p.group_id for p in policies}) != len(policies):
