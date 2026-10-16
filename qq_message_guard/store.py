@@ -159,10 +159,29 @@ class Store:
         for row in await self._rows("SELECT id FROM cases WHERE state IN ('queued','auditing')"):
             await self.finish(row["id"], "incomplete", {"reason": "插件重载中断，未完成审核"}, now)
         for row in await self._rows("SELECT * FROM operations WHERE state='submitted'"):
-            await self.operation(row["id"], "unknown")
+            await self.operation(row["id"], "unknown", "进程中断，已提交请求的结果需要人工核对", now)
             await self.put("pause:" + row["account"], "上次提交结果不明，请核对后使用恢复命令")
         for row in await self._rows("SELECT id FROM operations WHERE state='reserved'"):
-            await self.operation(row["id"], "not_sent")
+            await self.operation(row["id"], "not_sent", "进程中断，请求尚未提交", now)
+        # Repair the split bookkeeping left by versions before 0.9.1. Do not
+        # replay operations or reconstruct historical mute counters.
+        for row in await self._rows(
+            "SELECT o.* FROM operations o JOIN cases c ON c.id=o.case_id"
+            " WHERE o.kind='recall' AND o.state='confirmed' AND c.state!='recalled'"
+        ):
+            await self.finish(
+                row["case_id"],
+                "recalled",
+                {"reason": "撤回接口已确认成功，启动时校正记录"},
+                now,
+                flagged=True,
+            )
+        for row in await self._rows(
+            "SELECT o.* FROM operations o JOIN cases c ON c.id=o.case_id"
+            " WHERE o.kind='mute' AND o.state IN ('not_sent','failed','unknown')"
+            " AND json_extract(c.data,'$.mute_status') IN ('planned','reserved','submitted')"
+        ):
+            await self.patch(row["case_id"], {"mute_status": row["state"], "mute_reason": row["detail"]})
         for row in await self._rows(
             "SELECT * FROM cases WHERE action_ready=1 OR json_extract(data,'$.actions_pending')=1"
         ):
@@ -174,7 +193,9 @@ class Store:
                     {
                         "auto_ready": False,
                         "actions_pending": False,
-                        "reason": "重载取消了尚未提交的自动操作，请人工复核",
+                        "reason": case["data"].get("reason", "")
+                        if case["state"] in ("recalled", "unknown", "failed")
+                        else "重载取消了尚未提交的自动操作，请人工复核",
                     },
                     now,
                     flagged=bool(case["flagged"]),
@@ -522,11 +543,29 @@ class Store:
 
     async def operation(self, oid, state, detail="", confirmed_at=None):
         previous = await self._row("SELECT * FROM operations WHERE id=?", (oid,))
+        if previous and previous["state"] == "confirmed":
+            return  # A later cancellation or bookkeeping failure cannot undo QQ's acknowledgement.
         await self.db.execute("UPDATE operations SET state=?,detail=? WHERE id=?", (state, detail[:500], oid))
-        if previous and state == "confirmed" and previous["state"] != "confirmed":
-            await self.confirmed_member_operation(
-                previous, confirmed_at if confirmed_at is not None else previous["at"]
-            )
+        if previous:
+            if state == "confirmed":
+                await self.confirmed_member_operation(
+                    previous, confirmed_at if confirmed_at is not None else previous["at"]
+                )
+            elif previous["kind"] == "mute" and previous["case_id"] is not None:
+                await self.patch(previous["case_id"], {"mute_status": state, "mute_reason": detail[:500]})
+            elif previous["kind"] == "recall" and state in ("unknown", "failed"):
+                if previous["case_id"] is not None:
+                    await self.finish(
+                        previous["case_id"],
+                        state,
+                        {"reason": detail},
+                        confirmed_at if confirmed_at is not None else time.time(),
+                        flagged=True,
+                    )
+            if state == "unknown":
+                # Persist the pause with the uncertain outcome. A power loss
+                # between separate commits must not silently re-enable writes.
+                await self.put("pause:" + previous["account"], "操作结果不明，请核对后恢复")
         if state in ("not_sent", "failed", "confirmed", "unknown"):
             key = f"op-cooldowns:{oid}"
             reservations = await self.get(key, [])
@@ -536,14 +575,26 @@ class Store:
                         await self.db.execute("DELETE FROM state WHERE key=?", (name,))
             await self.db.execute("DELETE FROM state WHERE key=?", (key,))
 
+    async def confirm(self, oid, now, gap):
+        operation = await self._row("SELECT * FROM operations WHERE id=?", (oid,))
+        if operation is None:
+            raise GuardError("QQ操作记录不存在，无法保存回执。")
+        await self.operation(oid, "confirmed", "", now)
+        # Pace from the response, in the same transaction as the acknowledgement.
+        await self.put("gap:" + operation["account"], now + gap)
+
     async def confirmed_member_operation(self, operation, now):
-        if operation["kind"] not in ("recall", "mute") or operation["case_id"] is None:
+        if operation["kind"] not in ("recall", "mute", "warn") or operation["case_id"] is None:
             return
         case = await self.case(operation["case_id"])
         if case is None:
             return
+        if operation["kind"] == "warn":
+            await self.patch(case["id"], {"warned": True})
+            return
         data, message = case["data"], case["data"]["message"]
         if operation["kind"] == "recall":
+            await self.finish(case["id"], "recalled", {"reason": "撤回接口确认成功"}, now, flagged=True)
             if (
                 data.get("recall_automatic")
                 and data.get("mute_policy", {}).get("enabled")

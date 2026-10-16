@@ -112,7 +112,7 @@ class Commands:
                     f"管理员通知门槛：{notice_thresholds}；按类别分数处理，无额外意图门槛。\n"
                 )
             return (
-                f"群消息审核 v0.9.0\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
+                f"群消息审核 v0.9.1\n总开关：{'开启' if settings.enabled else '关闭'}\n群：{groups}\n"
                 f"后台：{self.s.failure or '运行中'}\n"
                 f"最近24小时：{sum(states.values())}条，排队{states.get('queued', 0)}，"
                 f"审核中{states.get('auditing', 0)}，未完整审核{states.get('incomplete', 0)}。\n"

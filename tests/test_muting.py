@@ -64,6 +64,19 @@ async def test_repeat_after_expiry_doubles_on_single_new_recall_and_survives_rel
     assert [p["duration"] for p in mute_writes(env)] == [3600, 7200, 14400]
 
 
+async def test_restart_before_first_mute_keeps_confirmed_recall_count(env):
+    enable(env)
+    for _ in range(3):
+        await recalled(env)
+    await env.store.close()
+    await env.store.open()
+    env.s.mutes = EscalatingMute(env.s)
+    assert await env.store.call("next_recall") is None
+    assert not mute_writes(env)
+    await recalled(env)
+    assert [p["duration"] for p in mute_writes(env)] == [3600]
+
+
 async def test_repeat_window_expired_requires_new_threshold_and_restarts_initial_duration(env):
     enable(env)
     await first_mute(env)

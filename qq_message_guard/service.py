@@ -893,9 +893,6 @@ class Service:
                 lambda: self.gate(case, manual),
                 prepare,
             )
-            await self.store.call(
-                "finish", cid, "recalled", {"reason": "撤回接口确认成功"}, self.clock(), True
-            )
             if not manual:
                 await self.mutes.after_recall(await self.store.call("case", cid))
             return "撤回接口确认成功。"
@@ -1317,5 +1314,4 @@ class Service:
             gate,
             prepare,
         )
-        await self.store.call("patch", cid, {"warned": True})
         self.journal.record("群内警告完成", case=cid, harmful=True)

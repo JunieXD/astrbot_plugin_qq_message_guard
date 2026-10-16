@@ -149,8 +149,11 @@ class Platform:
                 )
                 raise Deferred("QQ离线，操作已暂缓。")
 
+            submitted, confirmed = False, False
+
             async def perform():
-                oid, submitted = None, False
+                nonlocal submitted, confirmed
+                oid = None
                 try:
                     gate()
                     bot, stamp = await self.binding(pid, account)
@@ -215,14 +218,21 @@ class Platform:
                             message_id(result.get("message_id") if isinstance(result, dict) else None)
                         except GuardError as exc:
                             raise Uncertain("发送接口未返回有效消息ID，不会自动重发。") from exc
-                    await self.store.call("operation", oid, "confirmed", "", self.clock())
-                    # Pace from the response, so a slow API call cannot consume
-                    # the entire interval before the next operation begins.
-                    await self.store.call("put", "gap:" + key, self.clock() + gap)
+                    # Once QQ acknowledges success, a reload must finish saving
+                    # it before the store closes. Cancellation of aiosqlite's
+                    # await does not reliably cancel its queued SQLite commit.
+                    confirmation = asyncio.create_task(self.store.call("confirm", oid, self.clock(), gap))
+                    try:
+                        await asyncio.shield(confirmation)
+                    except asyncio.CancelledError:
+                        await confirmation
+                        confirmed = True
+                        raise
+                    confirmed = True
                     self.journal.record("QQ操作完成", case=cid, operation=oid, kind=kind)
                     return result
                 except BaseException as exc:
-                    if oid:
+                    if oid and not confirmed:
                         state = (
                             "failed"
                             if isinstance(exc, ApiFailure)
@@ -231,10 +241,6 @@ class Platform:
                             else "not_sent"
                         )
                         await asyncio.shield(self.store.call("operation", oid, state, str(exc)))
-                        if state == "unknown":
-                            await asyncio.shield(
-                                self.store.call("put", "pause:" + key, "操作结果不明，请核对后恢复")
-                            )
                     if not submitted and isinstance(exc, ApiFailure):
                         # A failed permission/message read is a deferred preparation,
                         # not a failed QQ write that should trip the shared account guard.
@@ -253,6 +259,13 @@ class Platform:
                     return await perform()
                 except Deferred as exc:
                     raise guard.deferred_error(str(exc)) from exc
+                except asyncio.CancelledError as exc:
+                    if not submitted or confirmed:
+                        # The shared guard treats ordinary cancellation as an
+                        # uncertain QQ failure and pauses every plugin. Let it
+                        # finish known-safe cancellation without that penalty.
+                        raise guard.deferred_error("插件停止，本次操作未提交或已确认成功。") from exc
+                    raise
 
             try:
                 options = (
@@ -289,6 +302,8 @@ class Platform:
                     raise Deferred("共享协调器没有执行本次操作，不将其视为成功。")
                 return result
             except guard.deferred_error as exc:
+                if isinstance(exc.__cause__, asyncio.CancelledError):
+                    raise exc.__cause__
                 if isinstance(exc.__cause__, Deferred):
                     raise exc.__cause__
                 raise Deferred("共享QQ操作协调器暂缓了本次操作，请检查其状态。") from exc
